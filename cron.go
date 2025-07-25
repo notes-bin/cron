@@ -19,6 +19,7 @@ type Cron struct {
 	parser    ScheduleParser
 	nextID    EntryID
 	jobWaiter sync.WaitGroup
+	entriesMu sync.RWMutex
 }
 
 type ScheduleParser interface {
@@ -147,7 +148,9 @@ func (c *Cron) run() {
 	}
 
 	for {
+		c.entriesMu.RLock()
 		sort.Sort(byTime(c.entries))
+		c.entriesMu.RUnlock()
 
 		var timer *time.Timer
 		if len(c.entries) == 0 || c.entries[0].Next.IsZero() {
@@ -199,7 +202,12 @@ func (c *Cron) run() {
 func (c *Cron) startJob(j Job) {
 	c.jobWaiter.Add(1)
 	go func() {
-		defer c.jobWaiter.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("job panic recovered", "error", r)
+			}
+			c.jobWaiter.Done()
+		}()
 		j.Run()
 	}()
 }
@@ -224,6 +232,9 @@ func (c *Cron) Stop() context.Context {
 }
 
 func (c *Cron) removeEntry(id EntryID) {
+	if c.entries == nil {
+		return
+	}
 	var entries []*Entry
 	for _, e := range c.entries {
 		if e.ID != id {
