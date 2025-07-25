@@ -15,15 +15,10 @@ type Cron struct {
 	remove    chan EntryID
 	running   bool
 	runningMu sync.Mutex
+	entriesMu sync.RWMutex
 	location  *time.Location
-	parser    ScheduleParser
 	nextID    EntryID
 	jobWaiter sync.WaitGroup
-	entriesMu sync.RWMutex
-}
-
-type ScheduleParser interface {
-	Parse(spec string) (Schedule, error)
 }
 
 type Job interface {
@@ -75,19 +70,11 @@ type FuncJob func()
 
 func (f FuncJob) Run() { f() }
 
-func (c *Cron) AddFunc(spec string, cmd func()) (EntryID, error) {
-	return c.AddJob(spec, FuncJob(cmd))
+func (c *Cron) AddFunc(schedule Schedule, cmd func()) EntryID {
+	return c.AddJob(schedule, FuncJob(cmd))
 }
 
-func (c *Cron) AddJob(spec string, cmd Job) (EntryID, error) {
-	schedule, err := c.parser.Parse(spec)
-	if err != nil {
-		return 0, err
-	}
-	return c.Schedule(schedule, cmd), nil
-}
-
-func (c *Cron) Schedule(schedule Schedule, cmd Job) EntryID {
+func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	c.nextID++
@@ -158,6 +145,9 @@ func (c *Cron) run() {
 		} else {
 			timer = time.NewTimer(c.entries[0].Next.Sub(now))
 		}
+
+		// 确保timer总是被停止
+		defer timer.Stop()
 
 		for {
 			select {
