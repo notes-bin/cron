@@ -94,8 +94,7 @@ func TestStartStop(t *testing.T) {
 func TestJobExecution(t *testing.T) {
 	// Setup test logging
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	slog.SetDefault(slog.New(handler))
 
 	c := New()
 	var executed bool
