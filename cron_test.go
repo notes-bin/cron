@@ -109,11 +109,9 @@ func TestJobExecution(t *testing.T) {
 
 	// Wait for job to execute
 	timer := time.NewTimer(1 * time.Second)
-	select {
-	case <-timer.C:
-		if !executed {
-			t.Error("job was not executed")
-		}
+	<-timer.C
+	if !executed {
+		t.Error("job was not executed")
 	}
 }
 
