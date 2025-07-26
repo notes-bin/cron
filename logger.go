@@ -6,16 +6,7 @@ import "log/slog"
 // 允许用户提供自定义日志实现
 // 包含Info和Error两个级别
 type Logger interface {
-	// Info 记录信息级别日志
-	// 参数:
-	//   msg - 日志消息
-	//   keysAndValues - 键值对形式的日志参数
 	Info(msg string, keysAndValues ...any)
-
-	// Error 记录错误级别日志
-	// 参数:
-	//   msg - 日志消息
-	//   keysAndValues - 键值对形式的日志参数
 	Error(msg string, keysAndValues ...any)
 }
 
