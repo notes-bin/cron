@@ -11,13 +11,14 @@ import (
 // Cron 定时任务调度器的主要结构体
 // 维护任务列表、运行状态和同步原语
 // 使用示例:
-// c := cron.New()
+//
+//	c := cron.New()
 //
 //	c.AddFunc(cron.Every(1*time.Hour), func() {
-//	    fmt.Println("每小时执行一次")
+//		fmt.Println("每小时执行一次")
 //	})
 //
-// c.Start()
+//	c.Start()
 type Cron struct {
 	entries   []*Entry       // 所有已注册的定时任务
 	stop      chan struct{}  // 停止信号通道
@@ -79,7 +80,6 @@ func (s byTime) Less(i, j int) bool {
 
 // New 创建一个新的Cron调度器实例
 // 默认使用本地时区和标准日志
-// 可以通过SetLogger方法自定义日志
 func New(opts ...Option) *Cron {
 	c := &Cron{
 		entries:   nil,
