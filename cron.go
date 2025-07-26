@@ -213,9 +213,6 @@ func (c *Cron) run() {
 			timer = time.NewTimer(c.entries[0].Next.Sub(now))
 		}
 
-		// 确保timer总是被停止
-		defer timer.Stop()
-
 		for {
 			select {
 			case now = <-timer.C:
