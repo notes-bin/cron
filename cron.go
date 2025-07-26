@@ -2,7 +2,6 @@ package cron
 
 import (
 	"context"
-	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -89,7 +88,7 @@ func New(opts ...Option) *Cron {
 		running:   false,
 		runningMu: sync.Mutex{},
 		location:  time.Local,
-		logger:    &defaultLogger{logger: slog.Default()},
+		logger:    &discardLogger{},
 	}
 
 	for _, opt := range opts {

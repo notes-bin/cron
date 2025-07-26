@@ -10,6 +10,15 @@ type Logger interface {
 	Error(msg string, keysAndValues ...any)
 }
 
+// discardLogger 实现了Logger接口，所有日志操作均无实际输出
+type discardLogger struct{}
+
+// Info 实现Logger接口的Info方法
+func (l *discardLogger) Info(msg string, keysAndValues ...any) {}
+
+// Error 实现Logger接口的Error方法
+func (l *discardLogger) Error(msg string, keysAndValues ...any) {}
+
 // defaultLogger 是默认的日志实现
 // 使用标准库log/slog进行日志输出
 type defaultLogger struct {
