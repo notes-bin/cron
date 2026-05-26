@@ -6,4 +6,14 @@
 //   - 完整时区支持，可按指定时区执行任务
 //   - 灵活的调度策略接口，支持复杂定时需求
 //   - 任务panic安全捕获，避免单个任务崩溃影响整体调度
+//
+// 使用示例:
+//
+//	c := cron.New()
+//
+//	c.AddFunc(cron.Every(1*time.Hour), func() {
+//		fmt.Println("每小时执行一次")
+//	})
+//
+//	c.Start()
 package cron

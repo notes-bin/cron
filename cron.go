@@ -2,6 +2,8 @@ package cron
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -9,60 +11,46 @@ import (
 
 // Cron 定时任务调度器的主要结构体
 // 维护任务列表、运行状态和同步原语
-// 使用示例:
-//
-//	c := cron.New()
-//
-//	c.AddFunc(cron.Every(1*time.Hour), func() {
-//		fmt.Println("每小时执行一次")
-//	})
-//
-//	c.Start()
 type Cron struct {
-	entries   []*Entry       // 所有已注册的定时任务
-	stop      chan struct{}  // 停止信号通道
-	add       chan *Entry    // 添加任务的通道
-	remove    chan EntryID   // 删除任务的通道
-	running   bool           // 调度器运行状态
-	runningMu sync.Mutex     // 保护running状态的互斥锁
-	entriesMu sync.RWMutex   // 保护entries的读写锁
-	location  *time.Location // 时区信息
-	nextID    EntryID        // 下一个任务ID
-	jobWaiter sync.WaitGroup // 等待所有任务完成的WaitGroup
-	logger    Logger         // 日志接口
+	entries   []*Entry
+	stop      chan struct{}
+	add       chan *Entry
+	remove    chan EntryID
+	running   bool
+	runningMu sync.Mutex   // 保护 running 和 nextID
+	entriesMu sync.RWMutex // 保护 entries 切片；run() 是唯一写者，外部读取需持有此锁
+	location  *time.Location
+	nextID    EntryID
+	jobWaiter sync.WaitGroup // 等待所有运行中 job 完成
+	logger    Logger
 }
 
-// Job 定义了定时任务的接口
-// 任何实现了Run方法的类型都可以作为定时任务
-// Run方法会在任务触发时被调用
-// 注意: Run方法应该快速执行，避免长时间阻塞
-// 如果需要执行耗时操作，应该在内部启动goroutine
+// Job 定时任务接口。
+// Run 在任务触发时被调用，应快速返回；耗时操作自行启动 goroutine。
 type Job interface {
 	Run()
 }
 
-// Schedule 定义了任务调度的接口
-// Next方法接收当前时间，返回下一次任务执行的时间
-// 调度器会根据此时间安排下一次执行
+// Schedule 调度策略接口。
+// Next 返回下一次执行时间；返回零值表示不再调度。
 type Schedule interface {
 	Next(time.Time) time.Time
 }
 
-// EntryID 是定时任务的唯一标识符类型
-// 用于添加、删除和识别任务
+// EntryID 是任务的唯一标识符。
 type EntryID int
 
 // Entry 表示一个定时任务条目
-// 包含任务ID、调度器、下次执行时间、上次执行时间和任务本身
 type Entry struct {
-	ID       EntryID   // 任务唯一标识符
-	Schedule Schedule  // 任务调度器
-	Next     time.Time // 下次执行时间
+	ID       EntryID
+	Schedule Schedule
+	Next     time.Time // 下次执行时间；零值表示无调度
 	Prev     time.Time // 上次执行时间
-	Job      Job       // 任务实例
+	Job      Job
 }
 
-// byTime 实现了sort.Interface接口，用于按Next时间排序任务
+// byTime 实现 sort.Interface，按 Next 升序排列。
+// Next 为零值的 entry 排在最后（视为无调度，不应触发）。
 type byTime []*Entry
 
 func (s byTime) Len() int      { return len(s) }
@@ -78,7 +66,7 @@ func (s byTime) Less(i, j int) bool {
 }
 
 // New 创建一个新的Cron调度器实例
-// 默认使用本地时区和标准日志
+// 默认使用本地时区，不输出日志（通过WithLogger注入日志实现）
 func New(opts ...Option) *Cron {
 	c := &Cron{
 		entries:   nil,
@@ -99,36 +87,28 @@ func New(opts ...Option) *Cron {
 	return c
 }
 
-// FuncJob 将普通函数转换为Job接口实现
-// 方便直接使用匿名函数作为任务
+// FuncJob 将 func() 适配为 Job 接口。
 type FuncJob func()
 
-// Run 实现Job接口，调用函数本身
-func (f FuncJob) Run() {
-	f()
-}
+// Run 实现 Job 接口。
+func (f FuncJob) Run() { f() }
 
-// AddFunc 添加一个函数作为定时任务
-// 参数:
-//
-//	schedule - 任务调度器，决定任务何时执行
-//	cmd - 要执行的函数
-//
-// 返回任务ID，可用于后续删除任务
+// AddFunc 添加一个函数作为定时任务，返回任务 ID。
 func (c *Cron) AddFunc(schedule Schedule, cmd func()) EntryID {
 	return c.AddJob(schedule, FuncJob(cmd))
 }
 
-// AddJob 添加一个任务到调度器
-// 参数:
-//
-//	schedule - 任务调度器，决定任务何时执行
-//	cmd - 实现了Job接口的任务实例
-//
-// 返回任务ID，可用于后续删除任务
-// 如果调度器未运行，任务会立即添加到任务列表
-// 如果调度器已运行，任务会通过通道异步添加
+// AddJob 添加一个 Job 到调度器，返回任务 ID。
+// schedule 和 cmd 均不能为 nil。
+// 调度器未启动时直接加入列表；已启动则通过 channel 异步添加。
 func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
+	if schedule == nil {
+		panic("cron: schedule cannot be nil")
+	}
+	if cmd == nil {
+		panic("cron: job cannot be nil")
+	}
+
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	c.nextID++
@@ -145,14 +125,10 @@ func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
 	return entry.ID
 }
 
-// Location 返回当前调度器使用的时区
-func (c *Cron) Location() *time.Location {
-	return c.location
-}
+// Location 返回调度器使用的时区。
+func (c *Cron) Location() *time.Location { return c.location }
 
-// Remove 从调度器中删除指定ID的任务
-// 如果调度器正在运行，会通过通道异步删除
-// 如果调度器未运行，会立即删除
+// Remove 从调度器中删除指定 ID 的任务。
 func (c *Cron) Remove(id EntryID) {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
@@ -163,9 +139,7 @@ func (c *Cron) Remove(id EntryID) {
 	}
 }
 
-// Start 启动调度器的后台运行
-// 此方法会启动一个goroutine执行run方法
-// 如果调度器已经在运行，此方法会直接返回
+// Start 在后台 goroutine 启动调度器。已启动则直接返回。
 func (c *Cron) Start() {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
@@ -176,9 +150,7 @@ func (c *Cron) Start() {
 	go c.run()
 }
 
-// Run 启动调度器并阻塞当前goroutine
-// 与Start的区别是Start在后台goroutine运行，而Run会阻塞
-// 通常在主goroutine中使用Run，在其他情况下使用Start
+// Run 启动调度器并阻塞当前 goroutine，直到 Stop 被调用。
 func (c *Cron) Run() {
 	c.runningMu.Lock()
 	if c.running {
@@ -190,10 +162,19 @@ func (c *Cron) Run() {
 	c.run()
 }
 
-// run 是调度器的主循环
-// 负责维护任务列表、计算下次执行时间和触发任务
-// 不应直接调用，应通过Start或Run方法启动
+// run 是调度器主循环。
+// 外层循环：排序并创建定时器；内层 select：处理定时触发或增删事件。
+// 内层 break 后回到外层重新排序，保证下次定时器基于最新状态。
 func (c *Cron) run() {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Error("cron run panic recovered", "error", r)
+			fmt.Fprintf(os.Stderr, "cron: run panic recovered: %v\n", r)
+			c.runningMu.Lock()
+			c.running = false
+			c.runningMu.Unlock()
+		}
+	}()
 
 	now := c.now()
 	for _, entry := range c.entries {
@@ -253,15 +234,14 @@ func (c *Cron) run() {
 	}
 }
 
-// startJob 启动一个任务的执行
-// 会启动新的goroutine执行任务，并处理可能的panic
-// 参数j是要执行的任务
+// startJob 在独立 goroutine 中执行 job，捕获 panic 防止调度器崩溃。
 func (c *Cron) startJob(j Job) {
 	c.jobWaiter.Add(1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				c.logger.Error("job panic recovered", "error", r)
+				fmt.Fprintf(os.Stderr, "cron: job panic recovered: %v\n", r)
 			}
 			c.jobWaiter.Done()
 		}()
@@ -269,14 +249,11 @@ func (c *Cron) startJob(j Job) {
 	}()
 }
 
-// now 返回当前时间，考虑了调度器的时区设置
-func (c *Cron) now() time.Time {
-	return time.Now().In(c.location)
-}
+// now 返回当前时间（使用调度器设置的时区）。
+func (c *Cron) now() time.Time { return time.Now().In(c.location) }
 
-// Stop 停止调度器的运行
-// 返回一个context.Context，当所有正在执行的任务完成后会被取消
-// 调用后，新的任务不会被调度，但正在执行的任务会继续完成
+// Stop 停止调度器。
+// 返回的 context 在所有运行中的 job 完成后被取消，调用方可据此等待优雅退出。
 func (c *Cron) Stop() context.Context {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
@@ -292,7 +269,7 @@ func (c *Cron) Stop() context.Context {
 	return ctx
 }
 
-// removeEntry 从任务列表中删除指定ID的任务
+// removeEntry 从 entries 中删除指定 ID 的 entry。
 func (c *Cron) removeEntry(id EntryID) {
 	if c.entries == nil {
 		return

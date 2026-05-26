@@ -1,13 +1,11 @@
 package cron
 
 import (
-	"log/slog"
-	"os"
+	"sync"
 	"testing"
 	"time"
 )
 
-// TestCronInitialization verifies that a Cron instance initializes correctly
 func TestCronInitialization(t *testing.T) {
 	c := New()
 	if c == nil {
@@ -21,7 +19,6 @@ func TestCronInitialization(t *testing.T) {
 	}
 }
 
-// TestAddJob verifies that jobs can be added to the cron scheduler
 func TestAddJob(t *testing.T) {
 	c := New()
 	job := FuncJob(func() {})
@@ -47,7 +44,6 @@ func TestAddJob(t *testing.T) {
 	}
 }
 
-// TestRemoveJob verifies that jobs can be removed from the cron scheduler
 func TestRemoveJob(t *testing.T) {
 	c := New()
 	job := FuncJob(func() {})
@@ -65,7 +61,6 @@ func TestRemoveJob(t *testing.T) {
 	}
 }
 
-// TestStartStop verifies that the cron scheduler starts and stops correctly
 func TestStartStop(t *testing.T) {
 	c := New()
 	c.Start()
@@ -90,41 +85,31 @@ func TestStartStop(t *testing.T) {
 	}
 }
 
-// TestJobExecution verifies that jobs are executed according to schedule
 func TestJobExecution(t *testing.T) {
-	// Setup test logging
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
-	slog.SetDefault(slog.New(handler))
-
 	c := New()
-	var executed bool
+	done := make(chan struct{})
+	var once sync.Once
 	job := FuncJob(func() {
-		executed = true
+		once.Do(func() { close(done) })
 	})
 
-	// Schedule to run immediately
 	c.AddJob(&ImmediateSchedule{}, job)
 	c.Start()
 	defer c.Stop()
 
-	// Wait for job to execute
-	timer := time.NewTimer(1 * time.Second)
-	<-timer.C
-	if !executed {
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
 		t.Error("job was not executed")
 	}
 }
 
-// TestSchedule implements the Schedule interface for testing
+// TestSchedule 用于测试，每小时触发一次。
 type TestSchedule struct{}
 
-func (s *TestSchedule) Next(t time.Time) time.Time {
-	return t.Add(1 * time.Hour)
-}
+func (s *TestSchedule) Next(t time.Time) time.Time { return t.Add(1 * time.Hour) }
 
-// ImmediateSchedule implements the Schedule interface to run immediately
+// ImmediateSchedule 用于测试，立即触发。
 type ImmediateSchedule struct{}
 
-func (s *ImmediateSchedule) Next(t time.Time) time.Time {
-	return t
-}
+func (s *ImmediateSchedule) Next(t time.Time) time.Time { return t }
