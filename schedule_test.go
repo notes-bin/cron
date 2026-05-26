@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// TestScheduleInterface verifies that schedule implementations work correctly
 func TestScheduleInterface(t *testing.T) {
 	// Test hourly schedule
 	hourly := &TestSchedule{}
@@ -36,7 +35,7 @@ func TestScheduleInterface(t *testing.T) {
 	}
 }
 
-// DailySchedule is a test implementation of the Schedule interface
+// DailySchedule 用于测试，每天指定时间触发；当天已过则推到次日。
 type DailySchedule struct {
 	Hour, Minute int
 }
