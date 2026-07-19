@@ -5,8 +5,13 @@ import (
 	"time"
 )
 
+// TestScheduleInterface 验证各种 Schedule 实现的 Next 计算是否正确。
+// 测试场景：
+//   - TestSchedule: 每小时触发，验证间隔为 1h
+//   - ImmediateSchedule: 立即触发，验证返回当前时间
+//   - DailySchedule: 每天 9:00 触发，验证返回的小时和分钟正确
 func TestScheduleInterface(t *testing.T) {
-	// Test hourly schedule
+	// 每小时触发
 	hourly := &TestSchedule{}
 	now := time.Now()
 	next := hourly.Next(now)
@@ -15,7 +20,7 @@ func TestScheduleInterface(t *testing.T) {
 		t.Errorf("expected 1 hour difference, got %v", next.Sub(now))
 	}
 
-	// Test immediate schedule
+	// 立即触发
 	immediate := &ImmediateSchedule{}
 	next = immediate.Next(now)
 
@@ -23,11 +28,10 @@ func TestScheduleInterface(t *testing.T) {
 		t.Errorf("expected immediate time, got %v", next)
 	}
 
-	// Test custom daily schedule
+	// 每天 9:00 触发
 	daily := &DailySchedule{Hour: 9, Minute: 0}
 	next = daily.Next(now)
 
-	// Verify the scheduled time is today or tomorrow at 9:00
 	expectedHour := 9
 	expectedMinute := 0
 	if next.Hour() != expectedHour || next.Minute() != expectedMinute {
