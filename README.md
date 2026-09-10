@@ -136,7 +136,7 @@ Stop() → stop
 |--------|------|
 | 零值 | 不再调度（条目仍在列表，排序靠后） |
 | `After(now)` | 正常等待 `Next - now` |
-| `== now` 或更早 | 立即触发（依赖 `NewTimer` 对非正时长的行为） |
+| `== now` 或更早 | 立即触发（时长钳为 ≥ 0） |
 
 `now` 由调度器传入（通常为本次唤醒时间），实现方不要改用 `time.Now()`。
 
@@ -319,7 +319,7 @@ type Logger interface {
 
 - [ ] `container/heap`：将每轮 O(N log N) 降为 O(log N)
 - [ ] `Entries()`：线程安全的只读快照
-- [ ] 明确处理 `Next.Sub(now) < 0`（立即触发）
+- [x] 明确处理 `Next.Sub(now) < 0`（按 0 时长立即触发）
 
 ### 中期
 

@@ -12,11 +12,14 @@ type Logger interface {
 }
 
 // discardLogger 丢弃所有日志；为默认实现。
-// panic 时 logPanic 仍会向 stderr 兜底输出。
+// panic 时 logPanic 通过指针同一性识别本实例，并写 stderr 兜底。
 type discardLogger struct{}
 
 // 编译期断言 discardLogger 实现 Logger。
 var _ Logger = (*discardLogger)(nil)
+
+// discard 是包级单例，供 New 默认注入与 logPanic 识别，避免每次 new 一个不可比实例。
+var discard Logger = &discardLogger{}
 
 func (l *discardLogger) Info(msg string, keysAndValues ...any)  {}
 func (l *discardLogger) Error(msg string, keysAndValues ...any) {}
