@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -90,22 +90,19 @@ type Entry struct {
 	Job      Job
 }
 
-// byTime 实现 sort.Interface，按 Next 升序排列 entries。
-// 零值 Next 视为"永不触发"，排在最后。
-// 排序后 c.entries[0] 就是下个触发的任务。
-type byTime []*Entry
-
-func (s byTime) Len() int      { return len(s) }
-func (s byTime) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
-func (s byTime) Less(i, j int) bool {
-	// 零值排在最后（永不触发）
-	if s[i].Next.IsZero() {
-		return false
+// entryByNext 按 Next 升序比较两个 Entry。
+// 零值 Next 视为「永不触发」，排在最后；排序后 c.entries[0] 即为下个触发任务。
+func entryByNext(a, b *Entry) int {
+	if a.Next.IsZero() {
+		if b.Next.IsZero() {
+			return 0
+		}
+		return 1
 	}
-	if s[j].Next.IsZero() {
-		return true
+	if b.Next.IsZero() {
+		return -1
 	}
-	return s[i].Next.Before(s[j].Next)
+	return a.Next.Compare(b.Next)
 }
 
 // ┌─────────────────────────────────────────────────────────┐
@@ -305,7 +302,7 @@ func (c *Cron) run() {
 		c.running = false
 		c.runningMu.Unlock()
 		// 等待所有 job goroutine 完成再通知 Stop()，
-		// 避免 WaitGroup.Add 与 Wait 并发（Go 1.26+ 严格检测）。
+		// 避免 WaitGroup.Go/Add 与 Wait 并发（Go 1.26+ 严格检测）。
 		c.jobWaiter.Wait()
 		c.stopCancel()
 	}()
@@ -327,7 +324,7 @@ func (c *Cron) run() {
 	//   3. select 等待四个事件之一
 	//   4. 处理事件后回到步骤 1
 	for {
-		sort.Sort(byTime(c.entries))
+		slices.SortFunc(c.entries, entryByNext)
 
 		// 使用 nil channel 替代 time.NewTimer(100000 * time.Hour)。
 		// 在 Go 中，nil channel 在 select 中永远阻塞，不消耗任何资源。
@@ -413,16 +410,14 @@ func stopTimer(t *time.Timer) {
 // jobWaiter 跟踪所有活跃的 job goroutine，
 // 用于 Stop() 的优雅退出（等待所有 job 完成后再取消 context）。
 func (c *Cron) startJob(j Job) {
-	c.jobWaiter.Add(1)
-	go func() {
+	c.jobWaiter.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
 				c.logPanic("job", r)
 			}
-			c.jobWaiter.Done()
 		}()
 		j.Run()
-	}()
+	})
 }
 
 // logPanic 统一处理 panic 记录的日志和 stderr 输出。
@@ -471,15 +466,10 @@ func (c *Cron) Stop() context.Context {
 
 // removeEntry 从 entries 中删除指定 ID 的 entry。
 //
-// 算法：遍历 + append 重建切片（O(n)）。
-// 对于定时任务调度器，entry 数量通常 < 1000，线性删除足够高效。
-// 如果 entry 不存在，遍历不会产生任何写入，操作安全。
+// 使用 slices.DeleteFunc 线性过滤（O(n)）；entry 数量通常 < 1000，足够高效。
+// 若不存在匹配项，切片不变。
 func (c *Cron) removeEntry(id EntryID) {
-	var entries []*Entry
-	for _, e := range c.entries {
-		if e.ID != id {
-			entries = append(entries, e)
-		}
-	}
-	c.entries = entries
+	c.entries = slices.DeleteFunc(c.entries, func(e *Entry) bool {
+		return e.ID == id
+	})
 }

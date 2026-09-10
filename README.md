@@ -109,7 +109,7 @@ Shutdown 是系统设计中最微妙的部分，必须保证以下约束：
 
 1. Stop() 必须立即返回，不能阻塞等待 job 完成
 2. 所有已启动的 job 必须完成执行
-3. `jobWaiter.Wait()` 必须在 `jobWaiter.Add()` 不再发生后调用（Go 1.26+ 不允许 Wait 与 Add 并发）
+3. `jobWaiter.Wait()` 必须在不再有新的 `WaitGroup.Go`/`Add` 之后调用（Go 1.26+ 不允许 Wait 与 Add 并发）
 4. 调用者最终必须能被通知到所有 job 已完成
 
 当前的 shutdown 流程：
