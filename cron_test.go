@@ -114,6 +114,58 @@ func TestJobExecution(t *testing.T) {
 	}
 }
 
+// TestConcurrentAddRemoveWhileRunning 在调度器运行期间并发 Add/Remove。
+// 用 -race 检测 entries 上的数据竞争（旧实现 select+default 会在 run 忙时直改 entries）。
+func TestConcurrentAddRemoveWhileRunning(t *testing.T) {
+	c := New()
+	c.Start()
+	defer func() { <-c.Stop().Done() }()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := c.AddFunc(Every(time.Hour), func() {})
+			c.Remove(id)
+		}()
+	}
+	wg.Wait()
+}
+
+// TestAddRemoveDuringStopDoesNotBlock 验证 Stop 过程中 Add/Remove 不会永久阻塞。
+// 正确实现通过 runDone 解除 channel 等待，且不在 Stop 中提前清 running。
+func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
+	c := New()
+	c.AddFunc(Every(time.Hour), func() {})
+	c.Start()
+
+	// 拉长 job，拉大 Stop 到 run 完全退出的窗口
+	started := make(chan struct{})
+	var once sync.Once
+	c.AddFunc(&ImmediateSchedule{}, func() {
+		once.Do(func() { close(started) })
+		time.Sleep(50 * time.Millisecond)
+	})
+	<-started
+
+	ctx := c.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		id := c.AddFunc(Every(time.Hour), func() {})
+		c.Remove(id)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AddJob/Remove blocked during/after Stop")
+	}
+	<-ctx.Done()
+}
+
 // TestSchedule 用于测试，每小时触发一次。
 type TestSchedule struct{}
 

@@ -17,28 +17,30 @@ import (
 // Cron 是定时任务调度器，围绕一个中心事件循环（run()）构建。
 //
 // 并发设计：
-//   - 所有 entries 的读写操作最终都由 run() goroutine 串行处理。
-//   - 外部 API（AddJob/Remove/Stop）通过 channel 向 run() 发送事件；
-//     当调度器未启动时，它们直接在调用者 goroutine 中操作 entries。
-//   - runningMu 保护 running、nextID，以及在 !running 时 entries 的直接读写。
+//   - 运行中：entries 仅由 run() 读写；AddJob/Remove 经无缓冲 channel 交给 run()。
+//   - 未运行 / run 已退出：AddJob/Remove 在 runningMu 下直接改 entries。
+//   - runningMu 保护 running、nextID，以及非 run() 路径上的 entries 访问。
+//   - runDone 在事件循环退出时关闭，解除仍阻塞在 add/remove 上的发送方。
 //
 // Shutdown 流程（stop channel 缓冲 1，确保 Stop() 永不阻塞）:
 //
-//	Stop() → stop 信号 → run() 退出 → 在 defer 中 Wait() 所有 job → cancel context
+//	Stop() → stop 信号 → run() 退出 → close(runDone) → running=false
+//	→ Wait() 所有 job → cancel context
 //
-// 这确保了 Wait() 只在 Add() 不再发生后执行，避免了 WaitGroup 的并发重用问题。
+// running 仅在 run() 的 defer 中清为 false，避免 Stop 提前清标志导致与 run 并发改 entries。
 type Cron struct {
-	entries   []*Entry       // 所有注册的定时任务（仅 run() goroutine 或 runningMu 保护下访问）
-	stop      chan struct{}   // stop 信号（缓冲 1，Stop() 直接发送不阻塞）
-	add       chan *Entry     // add 信号（无缓冲，提供背压；run() 退出时 select+default 兜底）
-	remove    chan EntryID    // remove 信号（同上）
-	running   bool            // 调度器是否运行中（runningMu 保护）
-	runningMu sync.Mutex      // 保护 running、nextID；!running 时也保护 entries 直接读写
-	location  *time.Location  // 任务触发的时间基准
-	nextID    EntryID         // 自增任务 ID（runningMu 保护）
-	jobWaiter sync.WaitGroup  // 跟踪所有已启动的 job goroutine；run() 退出前 Wait()
-	logger    Logger          // 日志输出（默认 discardLogger）
-	stopCtx   context.Context // Stop() 返回的 context，run() 退出时 cancel
+	entries    []*Entry        // 任务列表（运行中仅 run() 访问；否则需 runningMu）
+	stop       chan struct{}   // stop 信号（缓冲 1，Stop() 直接发送不阻塞）
+	add        chan *Entry     // add 信号（无缓冲，背压）
+	remove     chan EntryID    // remove 信号（无缓冲，背压）
+	runDone    chan struct{}   // 事件循环退出时关闭，解除 add/remove 上的阻塞发送
+	running    bool            // 调度器是否运行中（runningMu 保护；仅 run defer 清 false）
+	runningMu  sync.Mutex      // 保护 running、nextID；非运行路径也保护 entries
+	location   *time.Location  // 任务触发的时间基准
+	nextID     EntryID         // 自增任务 ID（runningMu 保护）
+	jobWaiter  sync.WaitGroup  // 跟踪所有已启动的 job goroutine；run() 退出前 Wait()
+	logger     Logger          // 日志输出（默认 discardLogger）
+	stopCtx    context.Context // Stop() 返回的 context，run() 退出时 cancel
 	stopCancel context.CancelFunc
 }
 
@@ -64,6 +66,7 @@ type Job interface {
 //   - 调度器被阻塞（如 Stop() 等待中）
 //   - 前一个触发被 Job 本身阻塞
 //   - 系统时间调整
+//
 // 基于 now 计算能保证调度相对于"本应触发的时间"是正确的。
 type Schedule interface {
 	Next(time.Time) time.Time
@@ -75,14 +78,15 @@ type EntryID int
 // Entry 代表调度器中的一个任务条目。
 //
 // 生命周期:
-//   AddFunc/AddJob → 加入 entries → 排序 → Next 到达 → startJob → 更新 Next → 重新排序
-//   Remove → 从 entries 中移除
-//   Job 返回零值 Next → Entry 保留在 entries 中但不会再被触发
+//
+//	AddFunc/AddJob → 加入 entries → 排序 → Next 到达 → startJob → 更新 Next → 重新排序
+//	Remove → 从 entries 中移除
+//	Job 返回零值 Next → Entry 保留在 entries 中但不会再被触发
 type Entry struct {
 	ID       EntryID
-	Schedule Schedule       // 调度策略
-	Next     time.Time      // 下次执行时间；零值表示已不再调度
-	Prev     time.Time      // 上次执行时间（零值表示尚未执行过）
+	Schedule Schedule  // 调度策略
+	Next     time.Time // 下次执行时间；零值表示已不再调度
+	Prev     time.Time // 上次执行时间（零值表示尚未执行过）
 	Job      Job
 }
 
@@ -120,9 +124,10 @@ func (s byTime) Less(i, j int) bool {
 // 通过 Option 函数选项模式注入自定义配置。
 func New(opts ...Option) *Cron {
 	c := &Cron{
-		stop:     make(chan struct{}, 1),  // 缓冲 1：Stop() 不阻塞，run() 总会读到
-		add:      make(chan *Entry),       // 无缓冲：AddJob 等待 run() 处理，形成自然背压
-		remove:   make(chan EntryID),      // 同上
+		stop:     make(chan struct{}, 1), // 缓冲 1：Stop() 不阻塞，run() 总会读到
+		add:      make(chan *Entry),      // 无缓冲：AddJob 等待 run() 处理，形成自然背压
+		remove:   make(chan EntryID),     // 同上
+		runDone:  make(chan struct{}),    // run() 退出时关闭；不支持 Stop 后再 Start
 		location: time.Local,
 		logger:   &discardLogger{},
 	}
@@ -162,9 +167,9 @@ func (c *Cron) AddFunc(schedule Schedule, cmd func()) EntryID {
 // schedule 和 cmd 都不能为 nil（panic 以快速暴露调用方错误）。
 //
 // 根据 running 状态选择路径：
-//   - 未启动：直接在调用者 goroutine 中追加到 entries（runningMu 保护）
-//   - 已启动：通过 add channel 发送给 run() goroutine 处理
-//     若 run() 已退出（select default 分支），回退到直接追加
+//   - 未运行：在 runningMu 下直接追加到 entries
+//   - 运行中：释放锁后经 add channel 交给 run()；若事件循环已退出则走 runDone，
+//     再在锁保护下追加（避免 select+default 在 run 忙时误改 entries）
 //
 // 返回自增的 EntryID，从 1 开始（零值表示无效 ID）。
 func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
@@ -176,7 +181,6 @@ func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
 	}
 
 	c.runningMu.Lock()
-	defer c.runningMu.Unlock()
 	c.nextID++
 	entry := &Entry{
 		ID:       c.nextID,
@@ -184,16 +188,19 @@ func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
 		Job:      cmd,
 	}
 	if !c.running {
-		// 未启动：直接追加
 		c.entries = append(c.entries, entry)
-	} else {
-		// 已启动：通过 channel 发送给 run() goroutine
-		select {
-		case c.add <- entry:
-		default:
-			// run() 已退出（panic 后），回退到直接追加
-			c.entries = append(c.entries, entry)
-		}
+		c.runningMu.Unlock()
+		return entry.ID
+	}
+	c.runningMu.Unlock()
+
+	// 不持锁发送，避免与 run() defer 抢 runningMu 死锁
+	select {
+	case c.add <- entry:
+	case <-c.runDone:
+		c.runningMu.Lock()
+		c.entries = append(c.entries, entry)
+		c.runningMu.Unlock()
 	}
 	return entry.ID
 }
@@ -207,21 +214,24 @@ func (c *Cron) Location() *time.Location { return c.location }
 
 // Remove 从调度器中删除指定 ID 的任务。
 //
-// 与 AddJob 同理，根据 running 状态选择路径：
-//   - 未启动：直接调用 removeEntry（runningMu 保护）
-//   - 已启动：通过 remove channel 发送，
-//     若 run() 已退出则直接调用 removeEntry
+// 与 AddJob 同理：
+//   - 未运行：在 runningMu 下直接 removeEntry
+//   - 运行中：经 remove channel 交给 run()；事件循环已退出则经 runDone 回退到加锁删除
 func (c *Cron) Remove(id EntryID) {
 	c.runningMu.Lock()
-	defer c.runningMu.Unlock()
-	if c.running {
-		select {
-		case c.remove <- id:
-		default:
-			c.removeEntry(id)
-		}
-	} else {
+	if !c.running {
 		c.removeEntry(id)
+		c.runningMu.Unlock()
+		return
+	}
+	c.runningMu.Unlock()
+
+	select {
+	case c.remove <- id:
+	case <-c.runDone:
+		c.runningMu.Lock()
+		c.removeEntry(id)
+		c.runningMu.Unlock()
 	}
 }
 
@@ -288,10 +298,12 @@ func (c *Cron) run() {
 	defer func() {
 		if r := recover(); r != nil {
 			c.logPanic("run", r)
-			c.runningMu.Lock()
-			c.running = false
-			c.runningMu.Unlock()
 		}
+		// 先关闭 runDone，解除仍阻塞在 add/remove 上的发送方，再清 running。
+		close(c.runDone)
+		c.runningMu.Lock()
+		c.running = false
+		c.runningMu.Unlock()
 		// 等待所有 job goroutine 完成再通知 Stop()，
 		// 避免 WaitGroup.Add 与 Wait 并发（Go 1.26+ 严格检测）。
 		c.jobWaiter.Wait()
@@ -319,14 +331,14 @@ func (c *Cron) run() {
 
 		// 使用 nil channel 替代 time.NewTimer(100000 * time.Hour)。
 		// 在 Go 中，nil channel 在 select 中永远阻塞，不消耗任何资源。
-		// 而有任务的真实定时器每次循环创建，用后丢弃（Go 1.23+ GC 可回收）。
+		var timer *time.Timer
 		var timerCh <-chan time.Time
 		if len(c.entries) == 0 || c.entries[0].Next.IsZero() {
 			timerCh = nil
 		} else {
-			// now 在每次 select 后更新（来自 timer.C、c.now() 或 add/remove 刷新），
-			// 因此 timer 的时长始终基于最新时间戳，不会累积漂移。
-			timerCh = time.NewTimer(c.entries[0].Next.Sub(now)).C
+			// now 在每次 select 后更新，timer 时长基于最新时间戳，不累积漂移。
+			timer = time.NewTimer(c.entries[0].Next.Sub(now))
+			timerCh = timer.C
 		}
 
 		select {
@@ -341,14 +353,15 @@ func (c *Cron) run() {
 				if e.Next.After(now) || e.Next.IsZero() {
 					break
 				}
-				c.startJob(e.Job)   // 启动独立 goroutine 执行
-				e.Prev = e.Next      // 记录本次触发时间
-				e.Next = e.Schedule.Next(now)  // 计算下次触发
+				c.startJob(e.Job)             // 启动独立 goroutine 执行
+				e.Prev = e.Next               // 记录本次触发时间
+				e.Next = e.Schedule.Next(now) // 计算下次触发
 				c.logger.Info("run", "now", now, "entry", e.ID, "next", e.Next)
 			}
 
 		// ── 新增任务 ──
 		case newEntry := <-c.add:
+			stopTimer(timer)
 			now = c.now()
 			newEntry.Next = newEntry.Schedule.Next(now)
 			c.entries = append(c.entries, newEntry)
@@ -358,14 +371,30 @@ func (c *Cron) run() {
 		// Stop() 发送后立即返回，不阻塞等待 job 完成；
 		// 等待逻辑在 defer 中（jobWaiter.Wait → stopCancel）。
 		case <-c.stop:
+			stopTimer(timer)
 			c.logger.Info("stop")
 			return
 
 		// ── 删除任务 ──
 		case id := <-c.remove:
+			stopTimer(timer)
 			now = c.now()
 			c.removeEntry(id)
 			c.logger.Info("removed", "entry", id)
+		}
+	}
+}
+
+// stopTimer 停止尚未触发的 timer；已触发或为 nil 时为无操作。
+func stopTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	if !t.Stop() {
+		// 已触发：排空 channel，避免残留值干扰后续逻辑（虽本循环会丢弃该 timer）
+		select {
+		case <-t.C:
+		default:
 		}
 	}
 }
@@ -418,8 +447,8 @@ func (c *Cron) now() time.Time { return time.Now().In(c.location) }
 // Stop 停止调度器并返回一个 context，在所有正在执行的 job 完成后被取消。
 //
 // 设计要点：
-//   - stop channel 缓冲 1，因此直接发送永不阻塞
-//   - 设置 running = false 后，未来的 AddJob/Remove 不会尝试 channel 发送
+//   - stop channel 缓冲 1；已发送过则 default，保证 Stop 永不阻塞且可重入
+//   - 不在此处将 running 置 false（由 run() defer 在关闭 runDone 后清除）
 //   - 返回的 context 在 run() 退出并等待所有 job 完成后被 cancel
 //   - 多次调用返回同一个 context，且幂等
 //
@@ -430,8 +459,11 @@ func (c *Cron) now() time.Time { return time.Now().In(c.location) }
 func (c *Cron) Stop() context.Context {
 	c.runningMu.Lock()
 	if c.running {
-		c.stop <- struct{}{} // 缓冲 1，永不阻塞
-		c.running = false
+		select {
+		case c.stop <- struct{}{}:
+		default:
+			// 已发送过 stop，或缓冲仍满
+		}
 	}
 	c.runningMu.Unlock()
 	return c.stopCtx

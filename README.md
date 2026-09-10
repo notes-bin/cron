@@ -82,7 +82,7 @@ go get github.com/notes-bin/cron
 | `timer.C` | 定时器到期 | 触发到期任务，更新 Next，重新排序 |
 | `add` channel | AddJob/AddFunc | 追加新 Entry，计算首次 Next |
 | `remove` channel | Remove | 从 entries 中删除指定 ID |
-| `stop` channel | Stop | 设置 running=false，等待 job 完成，取消 context |
+| `stop` channel | Stop | 退出事件循环；defer 中关闭 runDone、清 running、Wait job、cancel context |
 
 **为什么选择 select 而不是轮询？**
 
@@ -99,8 +99,9 @@ go get github.com/notes-bin/cron
 | `stop` | **缓冲 1** | Stop() 必须永不阻塞，且 stop 信号不能丢失。缓冲 1 确保无论 run() 是否在 select 中，信号都能可靠送达 |
 | `add` | **无缓冲** | AddJob 等待 run() 确认处理，形成自然背压，限制无限制的任务添加速率 |
 | `remove` | **无缓冲** | 同上，Remove 等待确认删除 |
+| `runDone` | 关闭即广播 | 事件循环退出时关闭；AddJob/Remove 在 `select` 中与发送并列，避免 run 退出后永久阻塞 |
 
-当 run() 因 panic 退出后，add/remove channel 会失去消费者。此时 AddJob/Remove 通过 `select { case ch <- v: default: }` 回退到直接操作 entries，避免永久阻塞。
+不要用 `select { case ch <- v: default: }` 在“发送失败”时直改 entries：run 忙于 sort/建 timer 时也会走 default，造成与 run 的数据竞争。正确做法是阻塞发送，或在 `runDone` 已关闭时再加锁改 entries。
 
 ### Shutdown 流程
 
@@ -115,15 +116,17 @@ Shutdown 是系统设计中最微妙的部分，必须保证以下约束：
 
 ```
 Stop()
-  ├─ 发送 stop 信号到缓冲 channel（立即返回）
+  ├─ 发送 stop 信号到缓冲 channel（立即返回；不在此处清 running）
   └─ 返回 stopCtx
 
 run() 收到 stop 信号
-  ├─ 从 select/return 退出
+  ├─ 停止未触发的 timer，从 select/return 退出
   └─ defer 按序执行：
      1. panic 恢复（若有）
-     2. jobWaiter.Wait()  ← 此时再无 Add()，安全
-     3. stopCancel()      ← 通知 Stop() 的调用者
+     2. close(runDone)    ← 解除仍阻塞在 add/remove 上的发送方
+     3. running = false
+     4. jobWaiter.Wait()  ← 此时再无新的 startJob Add()，安全
+     5. stopCancel()      ← 通知 Stop() 的调用者
 ```
 
 **关键设计决定：Wait → Cancel 的顺序。**
