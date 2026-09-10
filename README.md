@@ -41,7 +41,7 @@ go get github.com/notes-bin/cron
 └──────────────┘                   │ }                                │
                                    │ defer:                           │
         runDone ←──────────────────│   close(runDone)                 │
-        （解除阻塞发送）            │   running=false                  │
+        （解除阻塞发送）                                               │   running.Store(false)           │
                                    │   jobWaiter.Wait()               │
                                    │   stopCancel()                   │
                                    └──────────────────────────────────┘
@@ -51,9 +51,9 @@ go get github.com/notes-bin/cron
 
 **未运行 / run 已退出**：`AddJob`/`Remove` 在 `runningMu` 下直接改 `entries`。
 
-**`runningMu`** 保护 `running`、`nextID`，以及上述非 `run()` 路径上的 `entries`。
+**`runningMu`** 保护 `nextID`，以及上述非 `run()` 路径上的 `entries`；启停时与 `running` 的切换一起串行化。
 
-**`running`** 只在 `run()` 的 defer 里清为 `false`；`Stop()` 只发 stop，避免与仍在跑的循环竞态。
+**`running`**（`atomic.Bool`）只在 `run()` 的 defer 里 `Store(false)`；`Stop()` 只发 stop，避免与仍在跑的循环竞态。
 
 Job 经 `sync.WaitGroup.Go` 在独立 goroutine 执行，不阻塞事件循环。
 
@@ -99,7 +99,7 @@ run() 收到 stop
   └─ defer:
        1. recover（若有）
        2. close(runDone)     ← 解除 add/remove 阻塞
-       3. running = false
+       3. running.Store(false)
        4. jobWaiter.Wait()   ← 等待全部 Job
        5. stopCancel()       ← <-ctx.Done() 解除
 ```
