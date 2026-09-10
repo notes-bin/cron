@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -32,15 +33,7 @@ func TestAddJob(t *testing.T) {
 		t.Error("expected non-zero EntryID")
 	}
 
-	found := false
-	for _, entry := range c.entries {
-		if entry.ID == id {
-			found = true
-			break
-		}
-	}
-
-	if !found {
+	if slices.IndexFunc(c.entries, func(e *Entry) bool { return e.ID == id }) < 0 {
 		t.Errorf("entry with ID %d not found", id)
 	}
 }
@@ -54,10 +47,8 @@ func TestRemoveJob(t *testing.T) {
 
 	c.Remove(id)
 
-	for _, entry := range c.entries {
-		if entry.ID == id {
-			t.Errorf("entry with ID %d was not removed", id)
-		}
+	if slices.IndexFunc(c.entries, func(e *Entry) bool { return e.ID == id }) >= 0 {
+		t.Errorf("entry with ID %d was not removed", id)
 	}
 }
 
@@ -93,15 +84,13 @@ func TestStartStop(t *testing.T) {
 }
 
 // TestJobExecution 验证 ImmediateSchedule 能立即触发任务执行。
-// 使用 channel + sync.Once 确保任务恰好被执行一次，超时 1s。
-// 使用 Once 防止 ImmediateSchedule 的立即重触发导致多次 Done()。
+// 使用 channel + sync.OnceFunc 确保任务恰好被执行一次，超时 1s。
+// OnceFunc 防止 ImmediateSchedule 的立即重触发导致多次 close。
 func TestJobExecution(t *testing.T) {
 	c := New()
 	done := make(chan struct{})
-	var once sync.Once
-	job := FuncJob(func() {
-		once.Do(func() { close(done) })
-	})
+	closeDone := sync.OnceFunc(func() { close(done) })
+	job := FuncJob(closeDone)
 
 	c.AddJob(&ImmediateSchedule{}, job)
 	c.Start()
@@ -122,7 +111,7 @@ func TestConcurrentAddRemoveWhileRunning(t *testing.T) {
 	defer func() { <-c.Stop().Done() }()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -142,9 +131,9 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 
 	// 拉长 job，拉大 Stop 到 run 完全退出的窗口
 	started := make(chan struct{})
-	var once sync.Once
+	closeStarted := sync.OnceFunc(func() { close(started) })
 	c.AddFunc(&ImmediateSchedule{}, func() {
-		once.Do(func() { close(started) })
+		closeStarted()
 		time.Sleep(50 * time.Millisecond)
 	})
 	<-started
@@ -166,6 +155,20 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 	<-ctx.Done()
 }
 
+// TestEntryByNext 验证零值 Next 排在有效时间之后。
+func TestEntryByNext(t *testing.T) {
+	now := time.Now()
+	entries := []*Entry{
+		{ID: 1, Next: time.Time{}},
+		{ID: 2, Next: now.Add(time.Hour)},
+		{ID: 3, Next: now.Add(time.Minute)},
+	}
+	slices.SortFunc(entries, entryByNext)
+	if entries[0].ID != 3 || entries[1].ID != 2 || entries[2].ID != 1 {
+		t.Fatalf("unexpected order: %v, %v, %v", entries[0].ID, entries[1].ID, entries[2].ID)
+	}
+}
+
 // TestSchedule 用于测试，每小时触发一次。
 type TestSchedule struct{}
 
@@ -174,7 +177,7 @@ func (s *TestSchedule) Next(t time.Time) time.Time { return t.Add(1 * time.Hour)
 // ImmediateSchedule 用于测试，返回与 now 相同的时间。
 // 此调度器会立即触发（timer duration ≤ 0），适合验证 Job 被调度器执行的流程。
 // 注意：由于 Next(now) = now，会形成连续触发（每个周期 Next 都是当前时间），
-// 测试中应使用 sync.Once 或计数器避免无限执行。
+// 测试中应使用 sync.OnceFunc 或计数器避免无限执行。
 type ImmediateSchedule struct{}
 
 func (s *ImmediateSchedule) Next(t time.Time) time.Time { return t }
