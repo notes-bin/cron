@@ -2,6 +2,8 @@ package cron
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +32,30 @@ func Example_basic() {
 	// 任务执行次数: 2
 	// 任务执行次数: 3
 }
+
+// Example_slog 演示用薄适配器将 Logger 接到 log/slog。
+// 无 Output 断言（slog 文本含时间戳）；编译即可验证用法。
+func Example_slog() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	c := New(WithLogger(SlogLogger{L: log}))
+
+	c.AddFunc(Every(100*time.Millisecond), func() {})
+	c.Start()
+	time.Sleep(150 * time.Millisecond)
+	<-c.Stop().Done()
+}
+
+// SlogLogger 将 cron.Logger 转发到 *slog.Logger（kv 与 slog 属性列表同形）。
+type SlogLogger struct {
+	L *slog.Logger
+}
+
+func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
+func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+
+var _ Logger = SlogLogger{}
 
 // Example_concurrentJobs 演示长短任务并发；用 Mutex+Builder 固定可测输出。
 func Example_concurrentJobs() {
