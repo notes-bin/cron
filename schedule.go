@@ -2,15 +2,11 @@ package cron
 
 import "time"
 
-// DelaySchedule 是最常用的调度器实现：固定时间间隔触发。
+// DelaySchedule 按固定间隔调度：Next(t) = t.Add(Delay)。
 //
-// 实现原理: Next(t) = t + Delay
-// 即每次触发后，以下次触发时间（而非当前时间）为基准增加 Delay。
-// 这意味着:
-//   - 如果 Job 执行耗时 10s，Delay 是 1m，
-//     实际间隔始终是 1m（从上次触发到下次触发），不受 Job 执行时间影响。
-//   - 但如果系统在触发时被阻塞（如高负载），
-//     调度器使用 now 基准，可能导致快速连续触发追赶进度。
+// t 是调度器传入的基准时刻（触发时的 now）。因此：
+//   - 间隔相对“应触发时间”，一般不受 Job 执行时长影响；
+//   - 若事件循环曾被阻塞，t 为醒来后的时间，可能出现追赶式连触发。
 type DelaySchedule struct {
 	Delay time.Duration
 }
@@ -18,13 +14,10 @@ type DelaySchedule struct {
 // Next 返回 t + Delay。
 func (s DelaySchedule) Next(t time.Time) time.Time { return t.Add(s.Delay) }
 
-// Every 创建固定间隔的 DelaySchedule。
+// Every 构造 DelaySchedule，表示每隔 delay 触发一次。
 //
-// 使用示例:
-//
-//	cron.Every(5 * time.Minute)   // 每 5 分钟
-//	cron.Every(1 * time.Hour)     // 每小时
-//	cron.Every(30 * time.Second)  // 每 30 秒
+//	cron.Every(5 * time.Minute)
+//	cron.Every(30 * time.Second)
 func Every(delay time.Duration) DelaySchedule {
 	return DelaySchedule{Delay: delay}
 }
