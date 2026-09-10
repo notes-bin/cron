@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,29 +15,32 @@ import (
 // 并发约定：
 //   - 运行中：仅 run() 读写 entries；外部经 add/remove channel 投递变更。
 //   - 未运行或 run 已退出：AddJob/Remove 在 runningMu 下直接改 entries。
-//   - runningMu 还保护 running、nextID。
+//   - running 为 atomic.Bool；启停切换仍在 runningMu 下与 nextID/entries 路由同步。
+//   - runningMu 保护 nextID 与非 run 路径的 entries。
 //   - runDone 在事件循环退出时关闭，解除仍阻塞在 add/remove 上的发送方。
 //
 // 关闭路径（stop 缓冲 1，Stop 不阻塞）：
 //
-//	Stop → stop → run 退出 → close(runDone) → running=false
+//	Stop → stop → run 退出 → close(runDone) → running.Store(false)
 //	→ jobWaiter.Wait → stopCancel
 //
-// running 只在 run() defer 中置 false，避免与仍在执行的 run 并发改表。
+// running 只在 run() defer 中 Store(false)，避免 Stop 提前清标志导致与 run 并发改表。
 type Cron struct {
+	// 同步原语靠前，减少与指针字段交错带来的对齐填充
+	runningMu sync.Mutex
+	jobWaiter sync.WaitGroup
+	running   atomic.Bool
+
 	entries    []*Entry       // 任务表（运行中仅 run 访问；否则需 runningMu）
 	stop       chan struct{}  // 停止信号（缓冲 1）
 	add        chan *Entry    // 新增（无缓冲，背压）
 	remove     chan EntryID   // 删除（无缓冲，背压）
 	runDone    chan struct{}  // 事件循环结束时关闭
-	running    bool           // 是否在跑（仅 run defer 清 false）
-	runningMu  sync.Mutex     // 保护 running、nextID 与非 run 路径的 entries
 	location   *time.Location // 调度时区
-	nextID     EntryID        // 自增 ID（从 1 起）
-	jobWaiter  sync.WaitGroup // 跟踪 Job goroutine；退出前 Wait
-	logger     Logger         // 默认 discardLogger
+	logger     Logger         // 默认 discard
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
+	nextID     EntryID // 自增 ID（从 1 起，runningMu 保护）
 }
 
 // Job 是定时执行的业务逻辑。
@@ -149,14 +153,14 @@ func (c *Cron) AddJob(schedule Schedule, cmd Job) EntryID {
 		Schedule: schedule,
 		Job:      cmd,
 	}
-	if !c.running {
+	if !c.running.Load() {
 		c.entries = append(c.entries, entry)
 		c.runningMu.Unlock()
 		return entry.ID
 	}
 	c.runningMu.Unlock()
 
-	// 发送期间不持锁，避免与 run defer 抢 runningMu 死锁
+	// 发送期间不持锁，避免与 run() defer 抢 runningMu 死锁
 	select {
 	case c.add <- entry:
 	case <-c.runDone:
@@ -176,7 +180,7 @@ func (c *Cron) Location() *time.Location { return c.location }
 //   - 运行中：发往 remove；runDone 已关闭则加锁删除。
 func (c *Cron) Remove(id EntryID) {
 	c.runningMu.Lock()
-	if !c.running {
+	if !c.running.Load() {
 		c.removeEntry(id)
 		c.runningMu.Unlock()
 		return
@@ -196,10 +200,10 @@ func (c *Cron) Remove(id EntryID) {
 func (c *Cron) Start() {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
-	if c.running {
+	if c.running.Load() {
 		return
 	}
-	c.running = true
+	c.running.Store(true)
 	go c.run()
 }
 
@@ -207,11 +211,11 @@ func (c *Cron) Start() {
 // 已在运行则为 no-op。
 func (c *Cron) Run() {
 	c.runningMu.Lock()
-	if c.running {
+	if c.running.Load() {
 		c.runningMu.Unlock()
 		return
 	}
-	c.running = true
+	c.running.Store(true)
 	c.runningMu.Unlock()
 	c.run()
 }
@@ -221,7 +225,7 @@ func (c *Cron) Run() {
 // 启动时为已有 entry 计算首次 Next，然后循环：
 // 排序 → 建 timer（或 nil channel）→ select 处理事件。
 //
-// defer 顺序：recover → close(runDone) → running=false →
+// defer 顺序：recover → close(runDone) → running.Store(false) →
 // jobWaiter.Wait → stopCancel。Wait 必须在 cancel 之前，
 // 且须在不再有新的 WaitGroup.Go 之后（Go 1.26+）。
 func (c *Cron) run() {
@@ -230,9 +234,7 @@ func (c *Cron) run() {
 			c.logPanic("run", r)
 		}
 		close(c.runDone)
-		c.runningMu.Lock()
-		c.running = false
-		c.runningMu.Unlock()
+		c.running.Store(false)
 		c.jobWaiter.Wait()
 		c.stopCancel()
 	}()
@@ -335,14 +337,14 @@ func (c *Cron) now() time.Time { return time.Now().In(c.location) }
 
 // Stop 请求停止调度并立即返回 stopCtx。
 //
-// 不在此处将 running 置 false（由 run defer 在 close(runDone) 后清除）。
+// 不在此处将 running 置 false（由 run defer 在 close(runDone) 后 Store(false)）。
 // stop 已发送过则走 default，保证可重入且不阻塞。
 // 全部 Job 结束后 cancel stopCtx；多次调用返回同一 context。
 //
 //	<-c.Stop().Done()
 func (c *Cron) Stop() context.Context {
 	c.runningMu.Lock()
-	if c.running {
+	if c.running.Load() {
 		select {
 		case c.stop <- struct{}{}:
 		default:

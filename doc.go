@@ -12,7 +12,7 @@
 //	Start / Run ─── go/阻塞 ──→   Job 经 WaitGroup.Go 在独立 goroutine 执行
 //
 //	退出 defer 顺序:
-//	  close(runDone) → running=false → jobWaiter.Wait() → stopCancel()
+//	  close(runDone) → running.Store(false) → jobWaiter.Wait() → stopCancel()
 //
 // # 并发模型
 //
@@ -20,7 +20,7 @@
 //   - 未运行或 run 已退出：AddJob/Remove 在 runningMu 下直接改 entries。
 //   - runDone 在事件循环退出时关闭，与 add/remove 发送并列在 select 中，
 //     避免 run 退出后发送方永久阻塞，也避免 select+default 在 run 忙碌时误改 entries。
-//   - running 仅在 run() defer 中清为 false；Stop() 只发 stop 信号。
+//   - running 为 atomic.Bool，仅在 run() defer 中 Store(false)；Stop() 只发 stop 信号。
 //   - Job 与调度循环解耦：startJob 使用 sync.WaitGroup.Go 跟踪生命周期。
 //
 // # 特性

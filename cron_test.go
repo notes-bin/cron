@@ -39,7 +39,7 @@ func TestNew(t *testing.T) {
 		if c.Location() != time.Local {
 			t.Errorf("Location() = %v; want Local", c.Location())
 		}
-		if c.running {
+		if c.running.Load() {
 			t.Error("new Cron should not be running")
 		}
 	})
@@ -163,19 +163,13 @@ func TestStartStop(t *testing.T) {
 		c := New()
 		c.Start()
 
-		c.runningMu.Lock()
-		running := c.running
-		c.runningMu.Unlock()
-		if !running {
+		if !c.running.Load() {
 			t.Fatal("should be running after Start")
 		}
 
 		<-c.Stop().Done()
 
-		c.runningMu.Lock()
-		running = c.running
-		c.runningMu.Unlock()
-		if running {
+		if c.running.Load() {
 			t.Fatal("should not be running after Stop Done")
 		}
 	})
@@ -211,10 +205,7 @@ func TestStartStop(t *testing.T) {
 		// 等到确实进入 running
 		deadline := time.After(time.Second)
 		for {
-			c.runningMu.Lock()
-			running := c.running
-			c.runningMu.Unlock()
-			if running {
+			if c.running.Load() {
 				break
 			}
 			select {
