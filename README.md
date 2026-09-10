@@ -253,7 +253,8 @@ cron/
 ├── logger.go        # Logger / discardLogger
 ├── options.go       # WithLocation / WithLogger
 ├── schedule.go      # DelaySchedule / Every
-├── cron_test.go     # 生命周期、并发、排序
+├── cron_test.go     # 表驱动/子测试：生命周期、并发、选项
+├── cron_bench_test.go # 排序与增删基准
 ├── schedule_test.go # Schedule 行为
 ├── example_test.go  # Example（文档即测试）
 └── README.md
@@ -266,16 +267,19 @@ cron/
 ```bash
 go test ./...
 go test -race ./...
+go test -cover ./...
+go test -bench=. -benchmem ./...
 go test -run Example -v
 ```
 
 | 文件 | 覆盖 |
 |------|------|
-| `cron_test.go` | 增删、启停、执行、并发 Add/Remove、Stop 窗口、`entryByNext` |
-| `schedule_test.go` | 间隔 / 立即 / 每日示例 Schedule |
-| `example_test.go` | 基础、并发 Job、自定义 Job/Schedule |
+| `cron_test.go` | 表驱动/子测试：New 选项、增删、启停、`Run`、执行、panic 隔离、并发 |
+| `schedule_test.go` | `Every` 与示例 Schedule |
+| `cron_bench_test.go` | 排序与增删基准（`b.Loop`） |
+| `example_test.go` | godoc Example |
 
-Example 须 `<-c.Stop().Done()`；并发输出用 `Mutex` + `Builder`。
+语句覆盖率约 93%。Example 须 `<-c.Stop().Done()`；并发输出用 `Mutex` + `Builder`。
 
 ### 性能
 
