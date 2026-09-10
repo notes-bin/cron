@@ -5,13 +5,9 @@ import (
 	"time"
 )
 
-// TestScheduleInterface 验证各种 Schedule 实现的 Next 计算是否正确。
-// 测试场景：
-//   - TestSchedule: 每小时触发，验证间隔为 1h
-//   - ImmediateSchedule: 立即触发，验证返回当前时间
-//   - DailySchedule: 每天 9:00 触发，验证返回的小时和分钟正确
+// TestScheduleInterface 校验若干 Schedule 实现的 Next 行为：
+// 小时间隔、立即触发、每日定点。
 func TestScheduleInterface(t *testing.T) {
-	// 每小时触发
 	hourly := &TestSchedule{}
 	now := time.Now()
 	next := hourly.Next(now)
@@ -20,7 +16,6 @@ func TestScheduleInterface(t *testing.T) {
 		t.Errorf("expected 1 hour difference, got %v", next.Sub(now))
 	}
 
-	// 立即触发
 	immediate := &ImmediateSchedule{}
 	next = immediate.Next(now)
 
@@ -28,18 +23,15 @@ func TestScheduleInterface(t *testing.T) {
 		t.Errorf("expected immediate time, got %v", next)
 	}
 
-	// 每天 9:00 触发
 	daily := &DailySchedule{Hour: 9, Minute: 0}
 	next = daily.Next(now)
 
-	expectedHour := 9
-	expectedMinute := 0
-	if next.Hour() != expectedHour || next.Minute() != expectedMinute {
-		t.Errorf("expected %d:%02d, got %d:%02d", expectedHour, expectedMinute, next.Hour(), next.Minute())
+	if next.Hour() != 9 || next.Minute() != 0 {
+		t.Errorf("expected 9:00, got %d:%02d", next.Hour(), next.Minute())
 	}
 }
 
-// DailySchedule 用于测试，每天指定时间触发；当天已过则推到次日。
+// DailySchedule 测试/示例用：每天 Hour:Minute；若已过则推到次日。
 type DailySchedule struct {
 	Hour, Minute int
 }

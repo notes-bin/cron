@@ -7,8 +7,7 @@ import (
 	"time"
 )
 
-// TestCronInitialization 验证 New() 创建实例的默认状态。
-// 测试项：非空返回值、默认时区、未运行状态。
+// TestCronInitialization 检查 New 的默认状态：非 nil、Local、未运行。
 func TestCronInitialization(t *testing.T) {
 	c := New()
 	if c == nil {
@@ -22,8 +21,7 @@ func TestCronInitialization(t *testing.T) {
 	}
 }
 
-// TestAddJob 验证 AddJob 能正常添加任务并返回非零 ID。
-// 任务在未启动状态下直接追加到 entries，验证 entries 中包含该任务。
+// TestAddJob 在未启动时 AddJob，确认返回非零 ID 且 entries 含该任务。
 func TestAddJob(t *testing.T) {
 	c := New()
 	job := FuncJob(func() {})
@@ -38,8 +36,7 @@ func TestAddJob(t *testing.T) {
 	}
 }
 
-// TestRemoveJob 验证 Remove 能正确删除指定 ID 的任务。
-// 先添加任务，再删除，确认 entries 中不再包含该任务。
+// TestRemoveJob 添加后 Remove，确认 entries 中不再有该 ID。
 func TestRemoveJob(t *testing.T) {
 	c := New()
 	job := FuncJob(func() {})
@@ -52,13 +49,7 @@ func TestRemoveJob(t *testing.T) {
 	}
 }
 
-// TestStartStop 验证调度器的启动与停止流程。
-// 测试项：
-//   - Start 后 running = true
-//   - Stop 发送信号后 running = false
-//   - Stop() 返回的 context 最终被 cancel（所有 job 完成）
-//
-// 注意：此测试不添加任何任务，验证的是调度器本身的 lifecycle。
+// TestStartStop 验证 Start 后 running、Stop 且 <-Done 后 running 为 false。
 func TestStartStop(t *testing.T) {
 	c := New()
 	c.Start()
@@ -83,9 +74,8 @@ func TestStartStop(t *testing.T) {
 	}
 }
 
-// TestJobExecution 验证 ImmediateSchedule 能立即触发任务执行。
-// 使用 channel + sync.OnceFunc 确保任务恰好被执行一次，超时 1s。
-// OnceFunc 防止 ImmediateSchedule 的立即重触发导致多次 close。
+// TestJobExecution 用 ImmediateSchedule 验证 Job 会被调度执行。
+// sync.OnceFunc 防止连续立即触发导致多次 close(done)。
 func TestJobExecution(t *testing.T) {
 	c := New()
 	done := make(chan struct{})
@@ -94,7 +84,7 @@ func TestJobExecution(t *testing.T) {
 
 	c.AddJob(&ImmediateSchedule{}, job)
 	c.Start()
-	defer c.Stop()
+	defer func() { <-c.Stop().Done() }()
 
 	select {
 	case <-done:
@@ -103,8 +93,7 @@ func TestJobExecution(t *testing.T) {
 	}
 }
 
-// TestConcurrentAddRemoveWhileRunning 在调度器运行期间并发 Add/Remove。
-// 用 -race 检测 entries 上的数据竞争（旧实现 select+default 会在 run 忙时直改 entries）。
+// TestConcurrentAddRemoveWhileRunning 运行中并发 Add/Remove；配合 -race 检测竞态。
 func TestConcurrentAddRemoveWhileRunning(t *testing.T) {
 	c := New()
 	c.Start()
@@ -122,14 +111,12 @@ func TestConcurrentAddRemoveWhileRunning(t *testing.T) {
 	wg.Wait()
 }
 
-// TestAddRemoveDuringStopDoesNotBlock 验证 Stop 过程中 Add/Remove 不会永久阻塞。
-// 正确实现通过 runDone 解除 channel 等待，且不在 Stop 中提前清 running。
+// TestAddRemoveDuringStopDoesNotBlock 在 Stop 窗口内 Add/Remove 不得永久阻塞。
 func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 	c := New()
 	c.AddFunc(Every(time.Hour), func() {})
 	c.Start()
 
-	// 拉长 job，拉大 Stop 到 run 完全退出的窗口
 	started := make(chan struct{})
 	closeStarted := sync.OnceFunc(func() { close(started) })
 	c.AddFunc(&ImmediateSchedule{}, func() {
@@ -169,15 +156,13 @@ func TestEntryByNext(t *testing.T) {
 	}
 }
 
-// TestSchedule 用于测试，每小时触发一次。
+// TestSchedule 测试用：每小时触发一次。
 type TestSchedule struct{}
 
 func (s *TestSchedule) Next(t time.Time) time.Time { return t.Add(1 * time.Hour) }
 
-// ImmediateSchedule 用于测试，返回与 now 相同的时间。
-// 此调度器会立即触发（timer duration ≤ 0），适合验证 Job 被调度器执行的流程。
-// 注意：由于 Next(now) = now，会形成连续触发（每个周期 Next 都是当前时间），
-// 测试中应使用 sync.OnceFunc 或计数器避免无限执行。
+// ImmediateSchedule 测试用：Next(now)=now，会立即且连续触发。
+// 用例中须用 OnceFunc 或计数器限制执行次数。
 type ImmediateSchedule struct{}
 
 func (s *ImmediateSchedule) Next(t time.Time) time.Time { return t }
