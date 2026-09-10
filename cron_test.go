@@ -101,12 +101,10 @@ func TestConcurrentAddRemoveWhileRunning(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			id := c.AddFunc(Every(time.Hour), func() {})
 			c.Remove(id)
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -140,6 +138,16 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 		t.Fatal("AddJob/Remove blocked during/after Stop")
 	}
 	<-ctx.Done()
+}
+
+// TestAddFuncNilPanics 验证 AddFunc(nil) 立即 panic，避免 nil func 装入 Job 接口。
+func TestAddFuncNilPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for nil func")
+		}
+	}()
+	New().AddFunc(Every(time.Second), nil)
 }
 
 // TestEntryByNext 验证零值 Next 排在有效时间之后。

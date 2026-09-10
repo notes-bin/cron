@@ -100,7 +100,7 @@ func New(opts ...Option) *Cron {
 		remove:   make(chan EntryID),
 		runDone:  make(chan struct{}), // 仅关闭一次；不支持 Stop 后再 Start
 		location: time.Local,
-		logger:   &discardLogger{},
+		logger:   discard,
 	}
 	c.stopCtx, c.stopCancel = context.WithCancel(context.Background())
 
@@ -119,7 +119,11 @@ type FuncJob func()
 func (f FuncJob) Run() { f() }
 
 // AddFunc 添加函数任务，等价于 AddJob(schedule, FuncJob(cmd))。
+// cmd 为 nil 时 panic（避免 FuncJob(nil) 装入非 nil 的 Job 接口后延迟崩溃）。
 func (c *Cron) AddFunc(schedule Schedule, cmd func()) EntryID {
+	if cmd == nil {
+		panic("cron: func cannot be nil")
+	}
 	return c.AddJob(schedule, FuncJob(cmd))
 }
 
@@ -248,8 +252,12 @@ func (c *Cron) run() {
 		if len(c.entries) == 0 || c.entries[0].Next.IsZero() {
 			timerCh = nil
 		} else {
-			// 时长相对调度时钟 now，避免与 wall clock 漂移累积
-			timer = time.NewTimer(c.entries[0].Next.Sub(now))
+			// 时长相对调度时钟 now；非正数视为立即触发，避免依赖 NewTimer 对负值的细节
+			d := c.entries[0].Next.Sub(now)
+			if d < 0 {
+				d = 0
+			}
+			timer = time.NewTimer(d)
 			timerCh = timer.C
 		}
 
@@ -319,7 +327,8 @@ func (c *Cron) startJob(j Job) {
 // kind 为 "run" 或 "job"。
 func (c *Cron) logPanic(kind string, r any) {
 	c.logger.Error("cron "+kind+" panic recovered", "error", r)
-	if _, ok := c.logger.(*discardLogger); ok {
+	// 仅对默认 discard 写 stderr，避免自定义 Logger 被重复刷屏
+	if c.logger == discard {
 		fmt.Fprintf(os.Stderr, "cron: %s panic recovered: %v\n", kind, r)
 	}
 }
