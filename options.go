@@ -23,7 +23,9 @@ func WithLocation(location *time.Location) Option {
 	}
 }
 
-// WithLogger 注入 Logger；默认 discardLogger。logger 为 nil 时返回 error。
+// WithLogger 注入 Logger；默认 discard（静音）。logger 为 nil 时返回 error。
+//
+// 对接 slog 见 Logger 接口注释与 README「对接 log/slog」；完整可运行示例见 Example_slog。
 //
 //	c := cron.New(cron.WithLogger(myLogger))
 func WithLogger(logger Logger) Option {

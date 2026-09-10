@@ -2,8 +2,18 @@ package cron
 
 // Logger 为调度器日志的最小接口（Info / Error）。
 //
-// keysAndValues 为结构化键值对，便于对接 slog 等实现。
-// 通过 WithLogger 注入；未配置时使用 discardLogger。
+// keysAndValues 为结构化键值对（key, value, key, value, ...），便于对接 log/slog。
+// 通过 WithLogger 注入；未配置时使用包内 discard 单例（默认静音）。
+//
+// 对接 slog 示例：
+//
+//	type SlogLogger struct{ L *slog.Logger }
+//	func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
+//	func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+//	c := cron.New(cron.WithLogger(SlogLogger{L: slog.Default()}))
+//
+// 注意：仅当 logger 仍为默认 discard 时，panic 才会额外写 stderr；
+// 自定义 Logger（含 slog 适配）需自行保证 Error 可见性。
 type Logger interface {
 	// Info 记录常规事件：添加、删除、触发、唤醒等。
 	Info(msg string, keysAndValues ...any)

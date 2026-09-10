@@ -213,14 +213,60 @@ c.Remove(id)
 
 ### 日志与时区
 
+默认无日志（discard）。通过 `WithLogger` 注入即可；时区用 `WithLocation`。
+
 ```go
+loc, _ := time.LoadLocation("Asia/Shanghai")
 c := cron.New(
+    cron.WithLocation(loc),
     cron.WithLogger(myLogger),
-    cron.WithLocation(loc), // 如 Asia/Shanghai
 )
 ```
 
-默认无日志；panic 在 discardLogger 下仍会打到 stderr。
+**panic 行为：**
+
+- 默认 discard：`Logger.Error` 被丢弃，但会额外写 **stderr** 兜底
+- 自定义 Logger：只走你的 `Error` 实现，**不再**写 stderr（避免双写）
+
+#### 对接 `log/slog`
+
+`Logger` 的 `keysAndValues` 与 slog 属性列表同形，薄适配即可：
+
+```go
+package main
+
+import (
+    "log/slog"
+    "os"
+    "time"
+
+    "github.com/notes-bin/cron"
+)
+
+// SlogLogger 将 cron.Logger 转到 *slog.Logger。
+type SlogLogger struct {
+    L *slog.Logger
+}
+
+func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
+func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+
+func main() {
+    log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+        Level: slog.LevelInfo,
+    }))
+
+    c := cron.New(cron.WithLogger(SlogLogger{L: log}))
+    c.AddFunc(cron.Every(time.Minute), func() {
+        // ...
+    })
+    c.Start()
+    defer func() { <-c.Stop().Done() }()
+    // ...
+}
+```
+
+若只想看错误、过滤掉调度 Info，可在 Handler 上设更高 Level，或在适配器里忽略 `Info`。
 
 ### 优雅退出
 
