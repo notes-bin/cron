@@ -252,11 +252,8 @@ func (c *Cron) run() {
 		if len(c.entries) == 0 || c.entries[0].Next.IsZero() {
 			timerCh = nil
 		} else {
-			// 时长相对调度时钟 now；非正数视为立即触发，避免依赖 NewTimer 对负值的细节
-			d := c.entries[0].Next.Sub(now)
-			if d < 0 {
-				d = 0
-			}
+			// 时长相对调度时钟 now；非正数视为立即触发
+			d := max(c.entries[0].Next.Sub(now), 0)
 			timer = time.NewTimer(d)
 			timerCh = timer.C
 		}

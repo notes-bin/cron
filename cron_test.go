@@ -15,6 +15,18 @@ func startCron(t *testing.T, c *Cron) {
 	t.Cleanup(func() { <-c.Stop().Done() })
 }
 
+// waitDone 等待 ch 关闭，或测试 context 取消 / 超时。
+func waitDone(t *testing.T, ch <-chan struct{}, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-t.Context().Done():
+		t.Fatal("test context cancelled while waiting")
+	case <-time.After(timeout):
+		t.Fatal("timeout waiting for signal")
+	}
+}
+
 func TestNew(t *testing.T) {
 	t.Parallel()
 
@@ -206,6 +218,8 @@ func TestStartStop(t *testing.T) {
 				break
 			}
 			select {
+			case <-t.Context().Done():
+				t.Fatal("test context cancelled")
 			case <-deadline:
 				t.Fatal("Run did not set running")
 			case <-time.After(5 * time.Millisecond):
@@ -213,11 +227,7 @@ func TestStartStop(t *testing.T) {
 		}
 
 		<-c.Stop().Done()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("Run did not return after Stop")
-		}
+		waitDone(t, done, time.Second)
 	})
 
 	t.Run("Run is idempotent while running", func(t *testing.T) {
@@ -238,12 +248,7 @@ func TestJobExecution(t *testing.T) {
 		closeDone := sync.OnceFunc(func() { close(done) })
 		c.AddJob(&ImmediateSchedule{}, FuncJob(closeDone))
 		startCron(t, c)
-
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("job was not executed")
-		}
+		waitDone(t, done, time.Second)
 	})
 
 	t.Run("Every fires at least once", func(t *testing.T) {
@@ -253,12 +258,7 @@ func TestJobExecution(t *testing.T) {
 		closeDone := sync.OnceFunc(func() { close(done) })
 		c.AddFunc(Every(20*time.Millisecond), closeDone)
 		startCron(t, c)
-
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("Every job was not executed")
-		}
+		waitDone(t, done, time.Second)
 	})
 
 	t.Run("job panic does not stop scheduler", func(t *testing.T) {
@@ -274,6 +274,8 @@ func TestJobExecution(t *testing.T) {
 		deadline := time.After(time.Second)
 		for okHits.Load() == 0 {
 			select {
+			case <-t.Context().Done():
+				t.Fatal("test context cancelled")
 			case <-deadline:
 				t.Fatal("healthy job never ran after panic")
 			case <-time.After(10 * time.Millisecond):
@@ -294,11 +296,7 @@ func TestJobExecution(t *testing.T) {
 		}))
 		c.Start()
 
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("once job not executed")
-		}
+		waitDone(t, done, time.Second)
 
 		time.Sleep(50 * time.Millisecond) // 确认不会二次触发
 		<-c.Stop().Done()
@@ -347,6 +345,8 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 
 	select {
 	case <-done:
+	case <-t.Context().Done():
+		t.Fatal("test context cancelled")
 	case <-time.After(2 * time.Second):
 		t.Fatal("AddJob/Remove blocked during/after Stop")
 	}
