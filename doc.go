@@ -20,7 +20,7 @@
 //   - 未运行或 run 已退出：AddJob/Remove 在 runningMu 下直接改 entries。
 //   - runDone 在事件循环退出时关闭，与 add/remove 发送并列在 select 中，
 //     避免 run 退出后发送方永久阻塞，也避免 select+default 在 run 忙碌时误改 entries。
-//   - running 为 atomic.Bool，仅在 run() defer 中 Store(false)；Stop() 只发 stop 信号。
+//   - isRunning 为 atomic.Bool，仅在 run() defer 中 Store(false)；Stop() 只发 stop 信号。
 //   - Job 与调度循环解耦：startJob 使用 sync.WaitGroup.Go 跟踪生命周期。
 //
 // # 特性
@@ -37,5 +37,5 @@
 //   - Schedule.Next 必须基于传入的 now，不要用 time.Now()
 //   - Next 返回零值表示不再调度（条目仍留在列表中，排序靠后）
 //   - Job.Run 应尽快返回；长任务自行开 goroutine
-//   - 每个 Cron 实例只应 Start/Run 一次，不支持 Stop 后再 Start
+//   - 每个 Cron 实例只应 Start/Run 一次；Stop 后再 Start/Run 会 panic（避免二次 close）
 package cron

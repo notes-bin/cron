@@ -8,8 +8,12 @@ package cron
 // 对接 slog 示例：
 //
 //	type SlogLogger struct{ L *slog.Logger }
-//	func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
-//	func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+//	func (s SlogLogger) Info(msg string, kv ...any) {
+//		if s.L != nil { s.L.Info(msg, kv...) }
+//	}
+//	func (s SlogLogger) Error(msg string, kv ...any) {
+//		if s.L != nil { s.L.Error(msg, kv...) }
+//	}
 //	c := cron.New(cron.WithLogger(SlogLogger{L: slog.Default()}))
 //
 // 注意：仅当 logger 仍为默认 discard 时，panic 才会额外写 stderr；

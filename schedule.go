@@ -12,12 +12,22 @@ type DelaySchedule struct {
 }
 
 // Next 返回 t + Delay。
-func (s DelaySchedule) Next(t time.Time) time.Time { return t.Add(s.Delay) }
+// Delay <= 0 时返回零值，表示不再调度，避免热循环拖死事件循环。
+func (s DelaySchedule) Next(t time.Time) time.Time {
+	if s.Delay <= 0 {
+		return time.Time{}
+	}
+	return t.Add(s.Delay)
+}
 
 // Every 构造 DelaySchedule，表示每隔 delay 触发一次。
+// delay <= 0 时 panic（程序员错误；非正间隔会导致立即连触发）。
 //
 //	cron.Every(5 * time.Minute)
 //	cron.Every(30 * time.Second)
 func Every(delay time.Duration) DelaySchedule {
+	if delay <= 0 {
+		panic("cron: non-positive delay")
+	}
 	return DelaySchedule{Delay: delay}
 }

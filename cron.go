@@ -197,27 +197,39 @@ func (c *Cron) Remove(id EntryID) {
 }
 
 // Start 在后台启动 run()；已在运行则为 no-op。
+// 若曾 Stop（runDone 已关闭）则 panic：不支持重启，二次 close(runDone) 会进程崩溃。
 func (c *Cron) Start() {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	if c.isRunning.Load() {
 		return
 	}
+	c.mustNotHaveStopped()
 	c.isRunning.Store(true)
 	go c.run()
 }
 
 // Run 在当前 goroutine 阻塞执行调度循环，直到 Stop。
-// 已在运行则为 no-op。
+// 已在运行则为 no-op；曾 Stop 后再调用则 panic（同 Start）。
 func (c *Cron) Run() {
 	c.runningMu.Lock()
 	if c.isRunning.Load() {
 		c.runningMu.Unlock()
 		return
 	}
+	c.mustNotHaveStopped()
 	c.isRunning.Store(true)
 	c.runningMu.Unlock()
 	c.run()
+}
+
+// mustNotHaveStopped 在持有 runningMu 时调用：runDone 已关闭则禁止再次进入 run。
+func (c *Cron) mustNotHaveStopped() {
+	select {
+	case <-c.runDone:
+		panic("cron: cannot start after stop")
+	default:
+	}
 }
 
 // run 为调度主循环（由 Start 异步或 Run 同步调用）。
@@ -328,7 +340,8 @@ func (c *Cron) logPanic(kind string, r any) {
 	c.logger.Error("cron "+kind+" panic recovered", "error", r)
 	// 仅对默认 discard 写 stderr，避免自定义 Logger 被重复刷屏
 	if c.logger == discard {
-		fmt.Fprintf(os.Stderr, "cron: %s panic recovered: %v\n", kind, r)
+		// 最佳努力写 stderr；忽略错误（管道关闭等不影响调度）
+		_, _ = fmt.Fprintf(os.Stderr, "cron: %s panic recovered: %v\n", kind, r)
 	}
 }
 

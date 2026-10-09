@@ -41,7 +41,7 @@ go get github.com/notes-bin/cron
 └──────────────┘                   │ }                                │
                                    │ defer:                           │
         runDone ←──────────────────│   close(runDone)                 │
-        （解除阻塞发送）                                               │   isRunning.Store(false)           │
+        （解除阻塞发送）                                               │   isRunning.Store(false)         │
                                    │   jobWaiter.Wait()               │
                                    │   stopCancel()                   │
                                    └──────────────────────────────────┘
@@ -140,7 +140,7 @@ Stop() → stop
 
 `now` 由调度器传入（通常为本次唤醒时间），实现方不要改用 `time.Now()`。
 
-内置：`Every(d)` → `DelaySchedule`，`Next(t) = t + d`。
+内置：`Every(d)` → `DelaySchedule`，`Next(t) = t + d`（`d <= 0` 时 `Every` panic；直接构造 `DelaySchedule{Delay:0}` 则 `Next` 返回零值，不再调度）。
 
 ---
 
@@ -243,13 +243,23 @@ import (
     "github.com/notes-bin/cron"
 )
 
-// SlogLogger 将 cron.Logger 转到 *slog.Logger。
+// SlogLogger 将 cron.Logger 转到 *slog.Logger；L 为 nil 时为 no-op。
 type SlogLogger struct {
     L *slog.Logger
 }
 
-func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
-func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+func (s SlogLogger) Info(msg string, kv ...any) {
+    if s.L == nil {
+        return
+    }
+    s.L.Info(msg, kv...)
+}
+func (s SlogLogger) Error(msg string, kv ...any) {
+    if s.L == nil {
+        return
+    }
+    s.L.Error(msg, kv...)
+}
 
 func main() {
     log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -346,10 +356,10 @@ go test -run Example -v
 | `New(...Option) *Cron` | 构造；可选 `WithLocation`、`WithLogger` |
 | `AddFunc` / `AddJob` | 注册任务，返回 `EntryID` |
 | `Remove` | 按 ID 删除 |
-| `Start` / `Run` | 后台 / 阻塞启动 |
+| `Start` / `Run` | 后台 / 阻塞启动；Stop 后再调会 panic |
 | `Stop() context.Context` | 停止；Done 表示 Job 全部结束 |
 | `Location()` | 当前时区 |
-| `Every(d)` | 固定间隔 Schedule |
+| `Every(d)` | 固定间隔 Schedule；`d <= 0` 时 panic |
 | `Job` / `Schedule` / `Logger` | 扩展接口 |
 
 ```go

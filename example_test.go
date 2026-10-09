@@ -48,12 +48,24 @@ func Example_slog() {
 }
 
 // SlogLogger 将 cron.Logger 转发到 *slog.Logger（kv 与 slog 属性列表同形）。
+// L 为 nil 时 Info/Error 为 no-op，避免延迟空指针崩溃。
 type SlogLogger struct {
 	L *slog.Logger
 }
 
-func (s SlogLogger) Info(msg string, kv ...any)  { s.L.Info(msg, kv...) }
-func (s SlogLogger) Error(msg string, kv ...any) { s.L.Error(msg, kv...) }
+func (s SlogLogger) Info(msg string, kv ...any) {
+	if s.L == nil {
+		return
+	}
+	s.L.Info(msg, kv...)
+}
+
+func (s SlogLogger) Error(msg string, kv ...any) {
+	if s.L == nil {
+		return
+	}
+	s.L.Error(msg, kv...)
+}
 
 var _ Logger = SlogLogger{}
 
@@ -138,17 +150,17 @@ type WeeklySchedule struct {
 	Weekday time.Weekday
 }
 
-// Next 返回下一个匹配的周内时间点。
+// Next 返回下一个严格晚于 t 的匹配周内时间点。
 func (s *WeeklySchedule) Next(t time.Time) time.Time {
 	target := time.Date(t.Year(), t.Month(), t.Day(), s.Hour, s.Minute, 0, 0, t.Location())
 
 	daysAhead := int(s.Weekday - target.Weekday())
-	if daysAhead <= 0 {
+	if daysAhead < 0 {
 		daysAhead += 7
 	}
 
 	next := target.AddDate(0, 0, daysAhead)
-	if next.Before(t) {
+	if !next.After(t) {
 		next = next.AddDate(0, 0, 7)
 	}
 	return next

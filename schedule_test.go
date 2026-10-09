@@ -30,6 +30,32 @@ func TestEvery(t *testing.T) {
 	}
 }
 
+func TestEveryNonPositivePanics(t *testing.T) {
+	t.Parallel()
+	for _, delay := range []time.Duration{0, -time.Second} {
+		t.Run(delay.String(), func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			Every(delay)
+		})
+	}
+}
+
+func TestDelayScheduleNonPositiveNextIsZero(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	for _, delay := range []time.Duration{0, -time.Minute} {
+		next := DelaySchedule{Delay: delay}.Next(now)
+		if !next.IsZero() {
+			t.Fatalf("Delay=%v: Next=%v; expected zero", delay, next)
+		}
+	}
+}
+
 func TestScheduleImplementations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 3, 1, 10, 30, 0, 0, time.UTC)
@@ -38,7 +64,7 @@ func TestScheduleImplementations(t *testing.T) {
 		t.Parallel()
 		next := (&hourlySchedule{}).Next(now)
 		if next.Sub(now) != time.Hour {
-			t.Fatalf("got %v; want 1h", next.Sub(now))
+			t.Fatalf("got %v; expected 1h", next.Sub(now))
 		}
 	})
 
@@ -73,16 +99,38 @@ func TestScheduleImplementations(t *testing.T) {
 			t.Fatalf("expected next day, got same day %v", next)
 		}
 	})
+
+	t.Run("weekly schedule same day future", func(t *testing.T) {
+		t.Parallel()
+		// 2026-03-02 为周一；09:00 → 目标周一 15:00 应为今天
+		monday := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+		next := (&WeeklySchedule{Hour: 15, Minute: 0, Weekday: time.Monday}).Next(monday)
+		if next.Weekday() != time.Monday || next.Day() != monday.Day() || next.Hour() != 15 {
+			t.Fatalf("got %v; expected same monday 15:00", next)
+		}
+	})
+
+	t.Run("weekly schedule same day past pushes next week", func(t *testing.T) {
+		t.Parallel()
+		monday := time.Date(2026, 3, 2, 16, 0, 0, 0, time.UTC)
+		next := (&WeeklySchedule{Hour: 15, Minute: 0, Weekday: time.Monday}).Next(monday)
+		if !next.After(monday) || next.Weekday() != time.Monday {
+			t.Fatalf("got %v; expected next monday after %v", next, monday)
+		}
+		if next.Sub(monday) < 6*24*time.Hour {
+			t.Fatalf("got %v; expected about one week later", next)
+		}
+	})
 }
 
-// dailySchedule 测试用：每天 Hour:Minute；若已过则推到次日。
+// dailySchedule 测试用：每天 Hour:Minute；未严格晚于 t 则推到次日。
 type dailySchedule struct {
 	Hour, Minute int
 }
 
 func (s *dailySchedule) Next(t time.Time) time.Time {
 	next := time.Date(t.Year(), t.Month(), t.Day(), s.Hour, s.Minute, 0, 0, t.Location())
-	if next.Before(t) {
+	if !next.After(t) {
 		next = next.Add(24 * time.Hour)
 	}
 	return next

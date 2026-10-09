@@ -227,12 +227,45 @@ func TestStartStop(t *testing.T) {
 		startCron(t, c)
 		c.Run() // 已在跑，应立即返回
 	})
+
+	t.Run("start after stop panics", func(t *testing.T) {
+		t.Parallel()
+		c := New()
+		c.Start()
+		<-c.Stop().Done()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic")
+			}
+		}()
+		c.Start()
+	})
+
+	t.Run("run after stop panics", func(t *testing.T) {
+		t.Parallel()
+		c := New()
+		c.Start()
+		<-c.Stop().Done()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected panic")
+			}
+		}()
+		c.Run()
+	})
+}
+
+func TestSlogLoggerNilSafe(t *testing.T) {
+	t.Parallel()
+	var s SlogLogger // L == nil
+	s.Info("info")
+	s.Error("error")
 }
 
 func TestJobExecution(t *testing.T) {
 	t.Parallel()
 
-	t.Run("immediateSchedule fires", func(t *testing.T) {
+	t.Run("immediate schedule fires", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		done := make(chan struct{})
