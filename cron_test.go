@@ -39,12 +39,12 @@ func TestNew(t *testing.T) {
 		if c.Location() != time.Local {
 			t.Errorf("Location() = %v; want Local", c.Location())
 		}
-		if c.running.Load() {
+		if c.isRunning.Load() {
 			t.Error("new Cron should not be running")
 		}
 	})
 
-	t.Run("WithLocation", func(t *testing.T) {
+	t.Run("with location", func(t *testing.T) {
 		t.Parallel()
 		loc := time.FixedZone("UTC+8", 8*3600)
 		c := New(WithLocation(loc))
@@ -53,7 +53,7 @@ func TestNew(t *testing.T) {
 		}
 	})
 
-	t.Run("WithLogger", func(t *testing.T) {
+	t.Run("with logger", func(t *testing.T) {
 		t.Parallel()
 		l := &recordingLogger{}
 		c := New(WithLogger(l))
@@ -62,7 +62,7 @@ func TestNew(t *testing.T) {
 		}
 	})
 
-	t.Run("WithLocation nil panics", func(t *testing.T) {
+	t.Run("with location nil panics", func(t *testing.T) {
 		t.Parallel()
 		defer func() {
 			if recover() == nil {
@@ -72,7 +72,7 @@ func TestNew(t *testing.T) {
 		New(WithLocation(nil))
 	})
 
-	t.Run("WithLogger nil panics", func(t *testing.T) {
+	t.Run("with logger nil panics", func(t *testing.T) {
 		t.Parallel()
 		defer func() {
 			if recover() == nil {
@@ -86,10 +86,10 @@ func TestNew(t *testing.T) {
 func TestAddRemove(t *testing.T) {
 	t.Parallel()
 
-	t.Run("AddJob before start", func(t *testing.T) {
+	t.Run("add job before start", func(t *testing.T) {
 		t.Parallel()
 		c := New()
-		id := c.AddJob(&TestSchedule{}, FuncJob(func() {}))
+		id := c.AddJob(&hourlySchedule{}, FuncJob(func() {}))
 		if id == 0 {
 			t.Fatal("expected non-zero EntryID")
 		}
@@ -98,20 +98,20 @@ func TestAddRemove(t *testing.T) {
 		}
 	})
 
-	t.Run("Remove before start", func(t *testing.T) {
+	t.Run("remove before start", func(t *testing.T) {
 		t.Parallel()
 		c := New()
-		id := c.AddJob(&TestSchedule{}, FuncJob(func() {}))
+		id := c.AddJob(&hourlySchedule{}, FuncJob(func() {}))
 		c.Remove(id)
 		if slices.IndexFunc(c.entries, func(e *Entry) bool { return e.ID == id }) >= 0 {
 			t.Fatalf("entry %d still present", id)
 		}
 	})
 
-	t.Run("Remove missing id is no-op", func(t *testing.T) {
+	t.Run("remove missing id is no-op", func(t *testing.T) {
 		t.Parallel()
 		c := New()
-		c.AddJob(&TestSchedule{}, FuncJob(func() {}))
+		c.AddJob(&hourlySchedule{}, FuncJob(func() {}))
 		before := len(c.entries)
 		c.Remove(EntryID(999))
 		if len(c.entries) != before {
@@ -119,7 +119,7 @@ func TestAddRemove(t *testing.T) {
 		}
 	})
 
-	t.Run("IDs increment", func(t *testing.T) {
+	t.Run("ids increment", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		id1 := c.AddFunc(Every(time.Hour), func() {})
@@ -137,9 +137,9 @@ func TestAddPanics(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{"AddFunc nil func", func() { New().AddFunc(Every(time.Second), nil) }},
-		{"AddJob nil schedule", func() { New().AddJob(nil, FuncJob(func() {})) }},
-		{"AddJob nil job", func() { New().AddJob(Every(time.Second), nil) }},
+		{"add func nil func", func() { New().AddFunc(Every(time.Second), nil) }},
+		{"add job nil schedule", func() { New().AddJob(nil, FuncJob(func() {})) }},
+		{"add job nil job", func() { New().AddJob(Every(time.Second), nil) }},
 	}
 
 	for _, tt := range tests {
@@ -158,23 +158,23 @@ func TestAddPanics(t *testing.T) {
 func TestStartStop(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Start and Stop", func(t *testing.T) {
+	t.Run("start and stop", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		c.Start()
 
-		if !c.running.Load() {
+		if !c.isRunning.Load() {
 			t.Fatal("should be running after Start")
 		}
 
 		<-c.Stop().Done()
 
-		if c.running.Load() {
+		if c.isRunning.Load() {
 			t.Fatal("should not be running after Stop Done")
 		}
 	})
 
-	t.Run("Start is idempotent", func(t *testing.T) {
+	t.Run("start is idempotent", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		startCron(t, c)
@@ -182,7 +182,7 @@ func TestStartStop(t *testing.T) {
 		c.Start()
 	})
 
-	t.Run("Stop when not running", func(t *testing.T) {
+	t.Run("stop when not running", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		ctx := c.Stop()
@@ -193,7 +193,7 @@ func TestStartStop(t *testing.T) {
 		}
 	})
 
-	t.Run("Run blocks until Stop", func(t *testing.T) {
+	t.Run("run blocks until stop", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		done := make(chan struct{})
@@ -202,17 +202,17 @@ func TestStartStop(t *testing.T) {
 			close(done)
 		}()
 
-		// 等到确实进入 running
+		// 等到确实进入 isRunning
 		deadline := time.After(time.Second)
 		for {
-			if c.running.Load() {
+			if c.isRunning.Load() {
 				break
 			}
 			select {
 			case <-t.Context().Done():
 				t.Fatal("test context cancelled")
 			case <-deadline:
-				t.Fatal("Run did not set running")
+				t.Fatal("Run did not set isRunning")
 			case <-time.After(5 * time.Millisecond):
 			}
 		}
@@ -221,7 +221,7 @@ func TestStartStop(t *testing.T) {
 		waitDone(t, done, time.Second)
 	})
 
-	t.Run("Run is idempotent while running", func(t *testing.T) {
+	t.Run("run is idempotent while running", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		startCron(t, c)
@@ -232,17 +232,17 @@ func TestStartStop(t *testing.T) {
 func TestJobExecution(t *testing.T) {
 	t.Parallel()
 
-	t.Run("ImmediateSchedule fires", func(t *testing.T) {
+	t.Run("immediateSchedule fires", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		done := make(chan struct{})
 		closeDone := sync.OnceFunc(func() { close(done) })
-		c.AddJob(&ImmediateSchedule{}, FuncJob(closeDone))
+		c.AddJob(&immediateSchedule{}, FuncJob(closeDone))
 		startCron(t, c)
 		waitDone(t, done, time.Second)
 	})
 
-	t.Run("Every fires at least once", func(t *testing.T) {
+	t.Run("every fires at least once", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		done := make(chan struct{})
@@ -258,7 +258,7 @@ func TestJobExecution(t *testing.T) {
 		c := New(WithLogger(log))
 
 		var okHits atomic.Int32
-		c.AddJob(&ImmediateSchedule{}, FuncJob(func() { panic("boom") }))
+		c.AddJob(&immediateSchedule{}, FuncJob(func() { panic("boom") }))
 		c.AddFunc(Every(20*time.Millisecond), func() { okHits.Add(1) })
 		startCron(t, c)
 
@@ -281,7 +281,7 @@ func TestJobExecution(t *testing.T) {
 		c := New()
 		done := make(chan struct{})
 		var hits atomic.Int32
-		c.AddJob(&OnceSchedule{}, FuncJob(func() {
+		c.AddJob(&onceSchedule{}, FuncJob(func() {
 			hits.Add(1)
 			close(done)
 		}))
@@ -319,7 +319,7 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 
 	started := make(chan struct{})
 	closeStarted := sync.OnceFunc(func() { close(started) })
-	c.AddFunc(&ImmediateSchedule{}, func() {
+	c.AddFunc(&immediateSchedule{}, func() {
 		closeStarted()
 		time.Sleep(50 * time.Millisecond)
 	})
@@ -349,43 +349,43 @@ func TestEntryByNext(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name string
-		in   []*Entry
-		want []EntryID
+		name     string
+		input    []*Entry
+		expected []EntryID
 	}{
 		{
 			name: "zero sorts last",
-			in: []*Entry{
+			input: []*Entry{
 				{ID: 1, Next: time.Time{}},
 				{ID: 2, Next: now.Add(time.Hour)},
 				{ID: 3, Next: now.Add(time.Minute)},
 			},
-			want: []EntryID{3, 2, 1},
+			expected: []EntryID{3, 2, 1},
 		},
 		{
 			name: "both zero compare equal",
-			in: []*Entry{
+			input: []*Entry{
 				{ID: 1, Next: time.Time{}},
 				{ID: 2, Next: time.Time{}},
 			},
-			want: nil, // 仅校验 Compare==0，排序不稳定
+			expected: nil, // 仅校验 Compare==0，排序不稳定
 		},
 		{
 			name: "ascending times",
-			in: []*Entry{
+			input: []*Entry{
 				{ID: 1, Next: now.Add(3 * time.Second)},
 				{ID: 2, Next: now.Add(1 * time.Second)},
 				{ID: 3, Next: now.Add(2 * time.Second)},
 			},
-			want: []EntryID{2, 3, 1},
+			expected: []EntryID{2, 3, 1},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			entries := slices.Clone(tt.in)
-			if tt.want == nil {
+			entries := slices.Clone(tt.input)
+			if tt.expected == nil {
 				if entryByNext(entries[0], entries[1]) != 0 {
 					t.Fatal("expected entryByNext == 0 for two zero Next")
 				}
@@ -396,8 +396,8 @@ func TestEntryByNext(t *testing.T) {
 			for i, e := range entries {
 				got[i] = e.ID
 			}
-			if !slices.Equal(got, tt.want) {
-				t.Fatalf("order=%v; want %v", got, tt.want)
+			if !slices.Equal(got, tt.expected) {
+				t.Fatalf("order=%v; expected %v", got, tt.expected)
 			}
 		})
 	}
@@ -420,23 +420,23 @@ func (l *recordingLogger) Error(msg string, keysAndValues ...any) {
 	l.errors.Add(1)
 }
 
-// TestSchedule 测试用：每小时触发一次。
-type TestSchedule struct{}
+// hourlySchedule 测试用：每小时触发一次。
+type hourlySchedule struct{}
 
-func (s *TestSchedule) Next(t time.Time) time.Time { return t.Add(1 * time.Hour) }
+func (s *hourlySchedule) Next(t time.Time) time.Time { return t.Add(1 * time.Hour) }
 
-// ImmediateSchedule 测试用：Next(now)=now，会立即且连续触发。
-type ImmediateSchedule struct{}
+// immediateSchedule 测试用：Next(now)=now，会立即且连续触发。
+type immediateSchedule struct{}
 
-func (s *ImmediateSchedule) Next(t time.Time) time.Time { return t }
+func (s *immediateSchedule) Next(t time.Time) time.Time { return t }
 
-// OnceSchedule 首次返回 now，之后返回零值（一次性任务）。
-type OnceSchedule struct {
-	fired atomic.Bool
+// onceSchedule 首次返回 now，之后返回零值（一次性任务）。
+type onceSchedule struct {
+	hasFired atomic.Bool
 }
 
-func (s *OnceSchedule) Next(t time.Time) time.Time {
-	if s.fired.Swap(true) {
+func (s *onceSchedule) Next(t time.Time) time.Time {
+	if s.hasFired.Swap(true) {
 		return time.Time{}
 	}
 	return t

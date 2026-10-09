@@ -12,7 +12,7 @@
 //	Start / Run ─── go/阻塞 ──→   Job 经 WaitGroup.Go 在独立 goroutine 执行
 //
 //	退出 defer 顺序:
-//	  close(runDone) → running.Store(false) → jobWaiter.Wait() → stopCancel()
+//	  close(runDone) → isRunning.Store(false) → jobWaiter.Wait() → stopCancel()
 //
 // # 并发模型
 //
