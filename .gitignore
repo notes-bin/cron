@@ -31,6 +31,73 @@ go.work.sum
 # .idea/
 .vscode/
 
-# claude
+# AI agents / assistants（本地会话、缓存与工具配置，不入库）
+# Claude Code
 CLAUDE.md
-.claude
+CLAUDE.local.md
+.claude/
+.claude.json
+
+# Cursor
+.cursor/
+.cursorrules
+.cursorignore
+.cursor.json
+.cursor-settings.yaml
+.cursor-chat-history/
+
+# OpenAI Codex
+AGENTS.md
+.codex/
+
+# Aider
+.aider*
+.aiderignore
+
+# Gemini CLI
+GEMINI.md
+.gemini/
+.gemini-clipboard/
+gemini-debug.log
+
+# GitHub Copilot
+.copilot/
+.github/copilot-instructions.md
+
+# Continue
+.continue/
+.continuerc.json
+
+# Cline / Roo
+.cline/
+.clinerules
+cline.json
+.roo/
+.rooignore
+
+# Windsurf
+.windsurf/
+.windsurfrules
+
+# 其它常见 AI 工具状态目录
+.agent/
+.agents/
+.warp/
+.crush/
+.codeium/
+.deepseek/
+.tabnine/
+.tabnineignore
+.amazon-codewhisperer/
+.githubnext/
+.bolt/
+.v0/
+.playwright-mcp/
+.remember/
+.specstory/
+.superpowers/
+.replit
+replit.nix
+QWEN.md
+WARP.md
+CRUSH.md
