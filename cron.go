@@ -385,8 +385,9 @@ func (c *Cron) Stop() context.Context {
 }
 
 // removeEntry 用 slices.DeleteFunc 按 ID 删除；不存在则不变。O(n)。
+// Clip 去掉多余 cap，避免长期删增后 backing array 虚高。
 func (c *Cron) removeEntry(id EntryID) {
-	c.entries = slices.DeleteFunc(c.entries, func(e *Entry) bool {
+	c.entries = slices.Clip(slices.DeleteFunc(c.entries, func(e *Entry) bool {
 		return e.ID == id
-	})
+	}))
 }
