@@ -96,7 +96,7 @@ func entryByNext(a, b *Entry) int {
 //
 // 默认：time.Local、discardLogger、stop 缓冲 1、add/remove 无缓冲、
 // runDone 未关闭、stopCtx 已创建（run 退出时 cancel）。
-// 可通过 Option 覆盖；无效 Option 会使 New panic。
+// 可通过 Option 覆盖；非法 Option 直接 panic。
 func New(opts ...Option) *Cron {
 	c := &Cron{
 		stop:     make(chan struct{}, 1),
@@ -109,9 +109,7 @@ func New(opts ...Option) *Cron {
 	c.stopCtx, c.stopCancel = context.WithCancel(context.Background())
 
 	for _, opt := range opts {
-		if err := opt(c); err != nil {
-			panic(err)
-		}
+		opt(c)
 	}
 	return c
 }
