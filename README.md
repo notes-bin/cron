@@ -78,7 +78,7 @@ add/remove/stop 分支会 `stopTimer`，避免未触发 timer 泄漏。
 | `add` / `remove` | 无缓冲 | 背压：发送方等到 `run` 处理 |
 | `runDone` | 关闭即广播 | 循环退出时关闭；与发送并列在 `select` 中 |
 
-禁止 `select { case ch <- v: default: }` 在“发不出去”时直改 `entries`：`run` 在排序/建 timer 时也会走 default，造成数据竞争。应阻塞发送，或在 `runDone` 已关闭后再加锁修改。
+禁止 `select { case ch <- v: default: }` 在“发不出去”时直改 `entries`：`run` 在排序/建 timer 时也会走 default，造成数据竞争。应阻塞发送；若撞上已关闭的 `runDone`（关机竞态）则丢弃本次添加，已完全停止后再 Add 会 `panic(ErrStopped)`。
 
 ### Shutdown 流程
 
@@ -101,7 +101,7 @@ run() 收到 stop
        2. close(runDone)     ← 解除 add/remove 阻塞
        3. isRunning.Store(false)
        4. jobWaiter.Wait()   ← 等待全部 Job
-       5. stopCancel()       ← <-ctx.Done() 解除
+       5. stopCancel(ErrStopped) ← <-ctx.Done() 解除
 ```
 
 `Wait` 必须在 `stopCancel` 之前，否则调用方可能在 Job 未结束时就收到 Done。
@@ -287,9 +287,9 @@ func main() {
 | 用法 | 说明 |
 |------|------|
 | `c.Stop()` | 只发停止信号，立即返回 context |
-| `<-c.Stop().Done()` | 等到全部 Job 结束 |
+| `<-c.Stop().Done()` | 跑过则等到全部 Job 结束；从未 Start 则立即完成 |
 
-勿用 `defer c.Stop()` 代替等待 Done：函数返回时 Job 可能仍在跑，易触发竞态。
+勿用 `defer c.Stop()` 代替等待 Done：函数返回时 Job 可能仍在跑，易触发竞态。Stop 后再 `Start`/`Run`/`AddJob` 会 `panic(ErrStopped)`。
 
 ---
 
@@ -356,8 +356,9 @@ go test -run Example -v
 | `New(...Option) *Cron` | 构造；可选 `WithLocation`、`WithLogger` |
 | `AddFunc` / `AddJob` | 注册任务，返回 `EntryID` |
 | `Remove` | 按 ID 删除 |
-| `Start` / `Run` | 后台 / 阻塞启动；Stop 后再调会 panic |
-| `Stop() context.Context` | 停止；Done 表示 Job 全部结束 |
+| `Start` / `Run` | 后台 / 阻塞启动；Stop 后再调 panic(ErrStopped) |
+| `Stop() context.Context` | 停止；Done 在 Job 结束或从未 Start 时完成 |
+| `ErrStopped` | 已停止后再 Start/Run/AddJob |
 | `Location()` | 当前时区 |
 | `Every(d)` | 固定间隔 Schedule；`d <= 0` 时 panic |
 | `Job` / `Schedule` / `Logger` | 扩展接口 |

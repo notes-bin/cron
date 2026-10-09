@@ -1,6 +1,8 @@
 package cron
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -182,15 +184,36 @@ func TestStartStop(t *testing.T) {
 		c.Start()
 	})
 
-	t.Run("stop when not running", func(t *testing.T) {
+	t.Run("stop when not running completes", func(t *testing.T) {
 		t.Parallel()
 		c := New()
 		ctx := c.Stop()
 		select {
 		case <-ctx.Done():
-			t.Fatal("stopCtx should not be cancelled without Start")
-		default:
+			if !errors.Is(context.Cause(ctx), ErrStopped) {
+				t.Fatalf("Cause=%v; expected ErrStopped", context.Cause(ctx))
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Stop().Done() should complete without Start")
 		}
+	})
+
+	t.Run("add after stop panics", func(t *testing.T) {
+		t.Parallel()
+		c := New()
+		c.Start()
+		<-c.Stop().Done()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected panic")
+			}
+			err, ok := r.(error)
+			if !ok || !errors.Is(err, ErrStopped) {
+				t.Fatalf("recover=%v; expected ErrStopped", r)
+			}
+		}()
+		c.AddFunc(Every(time.Hour), func() {})
 	})
 
 	t.Run("run blocks until stop", func(t *testing.T) {
@@ -362,9 +385,18 @@ func TestAddRemoveDuringStopDoesNotBlock(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
+		defer func() {
+			// 停机竞态可能已完全停止：允许 ErrStopped，只要不永久阻塞
+			if r := recover(); r != nil {
+				err, ok := r.(error)
+				if !ok || !errors.Is(err, ErrStopped) {
+					panic(r)
+				}
+			}
+		}()
 		id := c.AddFunc(Every(time.Hour), func() {})
 		c.Remove(id)
-		close(done)
 	}()
 
 	select {

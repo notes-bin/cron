@@ -35,5 +35,5 @@ var _ Logger = (*discardLogger)(nil)
 // discard 是包级单例，供 New 默认注入与 logPanic 识别，避免每次 new 一个不可比实例。
 var discard Logger = &discardLogger{}
 
-func (l *discardLogger) Info(msg string, keysAndValues ...any)  {}
-func (l *discardLogger) Error(msg string, keysAndValues ...any) {}
+func (*discardLogger) Info(string, ...any)  {}
+func (*discardLogger) Error(string, ...any) {}

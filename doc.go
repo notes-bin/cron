@@ -29,7 +29,7 @@
 //   - Schedule / Job 接口可扩展；内置 Every 固定间隔
 //   - 时区可配置（默认 time.Local）
 //   - Logger 可注入（默认静音；panic 时 discardLogger 仍有 stderr 兜底）
-//   - 优雅退出：Stop() 返回 context，待全部 Job 结束后 cancel
+//   - 优雅退出：Stop() 返回 context；跑过后待 Job 结束 cancel，从未 Start 则立即 cancel
 //   - 无任务时用 nil channel 阻塞 select，不占用超长 timer
 //
 // # 注意
@@ -37,5 +37,5 @@
 //   - Schedule.Next 必须基于传入的 now，不要用 time.Now()
 //   - Next 返回零值表示不再调度（条目仍留在列表中，排序靠后）
 //   - Job.Run 应尽快返回；长任务自行开 goroutine
-//   - 每个 Cron 实例只应 Start/Run 一次；Stop 后再 Start/Run 会 panic（避免二次 close）
+//   - 每个 Cron 实例只应 Start/Run 一次；Stop 后再 Start/Run/AddJob 会 panic(ErrStopped)
 package cron

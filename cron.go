@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -9,6 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrStopped 表示 Cron 已 Stop，不能再 Start/Run，也不能再 AddJob。
+var ErrStopped = errors.New("cron: already stopped")
 
 // Cron 是定时任务调度器，由单一 run() 事件循环驱动。
 //
@@ -39,7 +43,7 @@ type Cron struct {
 	location   *time.Location // 调度时区
 	logger     Logger         // 默认 discard
 	stopCtx    context.Context
-	stopCancel context.CancelFunc
+	stopCancel context.CancelCauseFunc
 	nextID     EntryID // 自增 ID（从 1 起，runningMu 保护）
 }
 
@@ -95,7 +99,7 @@ func entryByNext(a, b *Entry) int {
 // New 创建 Cron。
 //
 // 默认：time.Local、discardLogger、stop 缓冲 1、add/remove 无缓冲、
-// runDone 未关闭、stopCtx 已创建（run 退出时 cancel）。
+// runDone 未关闭、stopCtx 已创建（run 退出或从未 Start 时的 Stop 会 cancel）。
 // 可通过 Option 覆盖；非法 Option 直接 panic。
 func New(opts ...Option) *Cron {
 	c := &Cron{
@@ -106,7 +110,7 @@ func New(opts ...Option) *Cron {
 		location: time.Local,
 		logger:   discard,
 	}
-	c.stopCtx, c.stopCancel = context.WithCancel(context.Background())
+	c.stopCtx, c.stopCancel = context.WithCancelCause(context.Background())
 
 	for _, opt := range opts {
 		opt(c)
@@ -120,22 +124,23 @@ type FuncJob func()
 // Run 调用底层函数。
 func (f FuncJob) Run() { f() }
 
-// AddFunc 添加函数任务，等价于 AddJob(schedule, FuncJob(cmd))。
-// cmd 为 nil 时 panic（避免 FuncJob(nil) 装入非 nil 的 Job 接口后延迟崩溃）。
-func (c *Cron) AddFunc(schedule Schedule, cmd func()) EntryID {
-	if cmd == nil {
+// AddFunc 添加函数任务，等价于 AddJob(schedule, FuncJob(fn))。
+// fn 为 nil 时 panic（避免 FuncJob(nil) 装入非 nil 的 Job 接口后延迟崩溃）。
+func (c *Cron) AddFunc(schedule Schedule, fn func()) EntryID {
+	if fn == nil {
 		panic("cron: func cannot be nil")
 	}
-	return c.AddJob(schedule, FuncJob(cmd))
+	return c.AddJob(schedule, FuncJob(fn))
 }
 
 // AddJob 注册 Job，返回 EntryID（从 1 递增）。
 //
 // schedule 或 job 为 nil 时 panic。
+// 已 Stop 后再添加会 panic(ErrStopped)。
 //
-//   - 未运行：在 runningMu 下 append 到 entries。
-//   - 运行中：先解锁再发往 add；若 runDone 已关闭则再加锁 append。
-//     不使用 select+default，以免 run 忙碌时与事件循环竞态。
+//   - 未运行且未 Stop：在 runningMu 下 append 到 entries。
+//   - 运行中：先解锁再发往 add；若与 Stop 竞态撞上 runDone，丢弃该 entry（仍返回已分配 ID），
+//     保证调用方不阻塞，也不把任务堆进已停止的表。
 func (c *Cron) AddJob(schedule Schedule, job Job) EntryID {
 	if schedule == nil {
 		panic("cron: schedule cannot be nil")
@@ -152,9 +157,15 @@ func (c *Cron) AddJob(schedule Schedule, job Job) EntryID {
 		Job:      job,
 	}
 	if !c.isRunning.Load() {
-		c.entries = append(c.entries, entry)
-		c.runningMu.Unlock()
-		return entry.ID
+		select {
+		case <-c.runDone:
+			c.runningMu.Unlock()
+			panic(ErrStopped)
+		default:
+			c.entries = append(c.entries, entry)
+			c.runningMu.Unlock()
+			return entry.ID
+		}
 	}
 	c.runningMu.Unlock()
 
@@ -162,9 +173,7 @@ func (c *Cron) AddJob(schedule Schedule, job Job) EntryID {
 	select {
 	case c.add <- entry:
 	case <-c.runDone:
-		c.runningMu.Lock()
-		c.entries = append(c.entries, entry)
-		c.runningMu.Unlock()
+		// 关机竞态：ID 已发出，不再写入 entries
 	}
 	return entry.ID
 }
@@ -225,7 +234,7 @@ func (c *Cron) Run() {
 func (c *Cron) mustNotHaveStopped() {
 	select {
 	case <-c.runDone:
-		panic("cron: cannot start after stop")
+		panic(ErrStopped)
 	default:
 	}
 }
@@ -246,7 +255,7 @@ func (c *Cron) run() {
 		close(c.runDone)
 		c.isRunning.Store(false)
 		c.jobWaiter.Wait()
-		c.stopCancel()
+		c.stopCancel(ErrStopped)
 	}()
 
 	now := c.now()
@@ -348,20 +357,30 @@ func (c *Cron) now() time.Time { return time.Now().In(c.location) }
 
 // Stop 请求停止调度并立即返回 stopCtx。
 //
+//   - 正在运行：发 stop（已发送过则 default），等 run 退出且全部 Job 结束后 cancel。
+//   - 从未 Start/Run：立即 cancel，避免推荐写法 <-Stop().Done() 永久阻塞。
+//   - 已 Stop 过：返回同一已取消的 context。
+//
 // 不在此处将 isRunning 置 false（由 run defer 在 close(runDone) 后 Store(false)）。
-// stop 已发送过则走 default，保证可重入且不阻塞。
-// 全部 Job 结束后 cancel stopCtx；多次调用返回同一 context。
 //
 //	<-c.Stop().Done()
 func (c *Cron) Stop() context.Context {
 	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
 	if c.isRunning.Load() {
 		select {
 		case c.stop <- struct{}{}:
 		default:
 		}
+		return c.stopCtx
 	}
-	c.runningMu.Unlock()
+	select {
+	case <-c.runDone:
+		// 已跑过并退出；stopCtx 由 run defer 取消
+	default:
+		// 从未进入 run：显式 cancel，使 Done 可等待
+		c.stopCancel(ErrStopped)
+	}
 	return c.stopCtx
 }
 
